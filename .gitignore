@@ -1,0 +1,12 @@
+configs/datasets.yaml
+__pycache__/
+*.py[cod]
+
+checkpoints/
+results/
+thirdparty/
+logs/
+*.pth
+*.pt
+*.csv
+

@@ -1,0 +1,272 @@
+# Cấu hình thí nghiệm cho chuỗi 10 WSI tasks.
+# Chọn method bằng: --config configs/methods.yaml --model <tên_method>
+# Thứ tự merge: common -> backbone được chọn -> method được chọn -> CLI.
+# Vì vậy, tham số truyền trực tiếp trên CLI luôn có độ ưu tiên cao nhất.
+# Các giá trị dưới đây là điểm khởi đầu, chưa phải hyperparameter tối ưu.
+
+common:
+  # Tên dataset continual được đăng ký trong source code.
+  dataset: seq-wsi
+
+  # File khai báo task order, annotation, feature root và split directory.
+  dataset_config: configs/datasets.yaml
+
+  # Fold cần chạy: all = 0..9; cũng nhận 0, 0,2 hoặc 4-6.
+  folds: all
+
+  # Seed cho Python, NumPy và PyTorch.
+  seed: 0
+
+  # Số epoch tối đa cho mỗi task (Joint dùng cho toàn bộ joint dataset).
+  n_epochs: 10
+
+  # Theo dõi validation cross-entropy sau mỗi epoch để dừng sớm.
+  # false: vẫn lưu/khôi phục best validation checkpoint nhưng chạy đủ n_epochs.
+  early_stopping: true
+
+  # Dừng sau số epoch liên tiếp này nếu validation loss không cải thiện.
+  early_stopping_patience: 3
+
+  # Số epoch tối thiểu phải hoàn thành trước khi được phép dừng.
+  early_stopping_min_epoch: 1
+
+  # Loss phải giảm ít nhất lượng này mới được tính là một lần cải thiện.
+  early_stopping_min_delta: 0.0
+
+  # In best-checkpoint và early-stopping counter ra terminal.
+  early_stopping_verbose: true
+
+  # false: không eval test trước task 1 hoặc trước khi học task mới; FWT = NaN.
+  # true: bật initial/future-task evaluation để tính Forward Transfer (tốn thời gian).
+  evaluate_fwt: true
+
+  # Batch vật lý của DataLoader. MIL cố định bằng 1 vì số patch/WSI thay đổi.
+  # Không nhầm với bags_per_update hoặc replay minibatch_size.
+  batch_size: 1
+
+  # Số DataLoader worker đọc HDF5 song song.
+  num_workers: 0
+
+  # Optimizer dùng chung cho các method trong file này; hiện chỉ hỗ trợ AdamW.
+  optimizer: adamw
+
+  # Epsilon số học của AdamW để tránh chia cho zero.
+  adam_eps: 1.0e-8
+
+  # Learning rate cơ sở. GDumb dùng maxlr/minlr trong giai đoạn fitting riêng.
+  lr: 1.0e-5
+
+  # Weight decay của AdamW.
+  optim_wd: 1.0e-4
+
+  # Slide-level aggregator mặc định: generic_mil, titan hoặc feather.
+  # Đây không phải patch feature extractor; input vẫn là CONCH features [N,768].
+  # Không khai báo backbone_freeze nghĩa là full fine-tune slide aggregator;
+  # thêm backbone_freeze: true nếu chỉ muốn train classifier 27 lớp.
+  backbone: titan
+
+  # Số chiều feature của mỗi patch trong HDF5.
+  feature_dim: 768
+
+  # Tên experiment/checkpoint; các placeholder được tự động thay thế:
+  # - {method}: tên phương pháp; {backbone}: slide aggregator.
+  # - {buffer_tag}: buffer30 nếu có buffer_size=30, ngược lại là nobuffer.
+  # Có thể dùng {buffer_size} nếu muốn giá trị thô (method không buffer -> na).
+  exp_desc: "{method}_{backbone}_{buffer_tag}_10tasks"
+
+  # Ghi legacy summary results/<exp_desc>/fold_<fold>.csv.
+  # Canonical evaluation artifacts vẫn luôn được ghi sau các task/fold.
+  csv_log: true
+
+  # Ghi train loss vào results/tensorboard_runs để xem bằng TensorBoard.
+  tensorboard: true
+
+backbones:
+  generic_mil:
+    # Hidden dimension của gated-attention MIL aggregator tự định nghĩa.
+    backbone_hidden_dim: 384
+
+    # Dropout trong generic MIL; 0.0 nghĩa là tắt dropout.
+    backbone_dropout: 0.0
+
+    # Số patch tối đa/WSI; 0 nghĩa là dùng toàn bộ bag.
+    backbone_max_patches: 0
+
+  titan:
+    # Hugging Face model ID của pretrained TITAN slide aggregator.
+    backbone_model_id: MahmoodLab/TITAN
+
+    # Commit revision được pin để các lần chạy dùng đúng cùng pretrained weights.
+    backbone_revision: dac6773d9961cfc75503440676ff157a2c6e8d2e
+
+    # Tối đa 400 patch/WSI: train lấy ngẫu nhiên, val/test lấy cách đều cố định.
+    backbone_max_patches: 400
+
+  feather:
+    # Hugging Face model ID của pretrained FEATHER ABMIL slide aggregator.
+    backbone_model_id: mahmoodlab/abmil.base.conch_v15.pc108-24k
+
+    # Commit revision được pin của FEATHER.
+    backbone_revision: 423c894c738294e8b0ac38938108180a2c21dd43
+
+    # 0 nghĩa là FEATHER dùng toàn bộ patch của mỗi WSI.
+    backbone_max_patches: 0
+
+methods:
+  agem:
+    # Sức chứa tối đa của replay buffer, đơn vị là WSI bag.
+    # Adapter A-GEM hiện thêm một bag vào buffer sau mỗi task.
+    buffer_size: 30
+
+    # Tham số replay tương thích CLI; WSI Buffer hiện lấy 1 replay bag/lần.
+    minibatch_size: 1
+
+  derpp:
+    # Sức chứa reservoir replay buffer, đơn vị là WSI bag.
+    buffer_size: 30
+
+    # Số replay bag yêu cầu; WSI Buffer chuẩn hiện lấy 1 bag/lần gọi.
+    minibatch_size: 1
+
+    # Trọng số MSE giữa logits hiện tại và logits đã lưu (dark replay).
+    alpha: 0.2
+
+    # Trọng số cross-entropy trên nhãn của replay bag.
+    beta: 0.2
+
+  er_ace:
+    # Sức chứa reservoir replay buffer, đơn vị là WSI bag.
+    buffer_size: 30
+
+    # Số replay bag yêu cầu; WSI Buffer chuẩn hiện lấy 1 bag/lần gọi.
+    minibatch_size: 1
+
+  ewc_on:
+    # Trọng số regularization EWC giữ tham số gần checkpoint task cũ.
+    e_lambda: 1.0
+
+    # Hệ số decay Fisher information cũ trong online EWC.
+    gamma: 1.0
+
+  gdumb:
+    # Số WSI bag tối đa được giữ; model chỉ fit buffer sau task cuối.
+    buffer_size: 30
+
+    # Giữ để tương thích rehearsal CLI; fit GDumb hiện duyệt từng bag trong buffer.
+    minibatch_size: 1
+
+    # Learning rate đầu của AdamW trong giai đoạn fit buffer.
+    maxlr: 1.0e-5
+
+    # Learning rate cuối của cosine scheduler; bằng maxlr tức LR đang cố định.
+    minlr: 1.0e-5
+
+    # Epoch tối đa khi fit buffer sau task cuối; early stopping có thể kết thúc sớm.
+    fitting_epochs: 10
+
+    # Tham số CutMix dự phòng; null và hiện chưa được dùng trong fit loop.
+    cutmix_alpha: null
+
+  # Joint không có tham số riêng: dùng toàn bộ cấu hình common/backbone và
+  # train đồng thời dữ liệu của cả 10 tasks như upper-bound baseline.
+  joint: {}
+
+  lwsr:
+    # Sức chứa variable-length replay reservoir, đơn vị là WSI bag.
+    buffer_size: 10
+
+    # Số replay bags cũ tối đa lấy từ buffer cho mỗi optimizer update.
+    minibatch_size: 1
+
+    # Số WSI bags hiện tại được gom vào một logical optimizer update.
+    bags_per_update: 4
+
+    # Số patch tối đa lưu cho mỗi replay bag để giới hạn RAM/GPU memory.
+    buffer_max_patches: 400
+
+    # Trọng số pair/similarity loss trên slide embeddings.
+    pair_loss_weight: 1.0
+
+    # Trọng số classification cross-entropy loss.
+    ce_loss_weight: 1.0
+
+    # Trọng số distance-consistency loss giữa replay embeddings cũ và mới.
+    dc_loss_weight: 0.01
+
+  lwf:
+    # Trọng số knowledge-distillation loss trên các lớp cũ.
+    alpha: 0.5
+
+    # Temperature làm mềm phân phối logits của teacher/student.
+    softmax_temp: 2.0
+
+  micil:
+    # Bật/tắt replay extension; false giữ chế độ MICIL không replay mặc định.
+    micil_replay: true
+
+    # Chuẩn hóa L2 classifier weights sau update ở các task sau.
+    micil_weight_norm: true
+
+    # Sức chứa replay reservoir; chỉ có hiệu lực khi micil_replay=true.
+    buffer_size: 30
+
+    # Số replay bags/update; chỉ có hiệu lực khi micil_replay=true.
+    minibatch_size: 1
+
+    # Số WSI bags hiện tại được gom vào một logical optimizer update.
+    bags_per_update: 1
+
+    # Số patch tối đa lưu trong mỗi replay bag.
+    buffer_max_patches: 400
+
+    # Trọng số class-balanced cross-entropy loss.
+    ce_loss_weight: 1.0
+
+    # Trọng số knowledge-distillation loss cho các lớp cũ.
+    kd_loss_weight: 10.0
+
+    # Trọng số loss khớp slide embedding với frozen teacher.
+    embedding_loss_weight: 1.0
+
+    # Temperature dùng khi distill logits cũ.
+    distillation_temperature: 2.0
+
+  qpmil_vl:
+    # Số cặp learnable key/prompt trong prototype pool.
+    pool_size: 20
+
+    # Số learnable context tokens trong mỗi prompt.
+    prompt_length: 24
+
+    # Số prototype/prompt phù hợp được chọn từ pool cho mỗi logical update.
+    match_size: 5
+
+    # Số WSI hiện tại gom cho một optimizer step; không phải replay minibatch.
+    bags_per_update: 1
+
+    # Tối đa 400 patch/WSI trước khi tạo bag query và prompt aggregation.
+    backbone_max_patches: 400
+
+    # Cách gộp patch features để tạo bag query: max hoặc mean.
+    pooling: max
+
+    # Scale cosine similarity patch-prompt trước softmax attention.
+    csm_logit_scale: 100.0
+
+    # Scale cosine similarity slide-class dùng làm classification logits.
+    classification_logit_scale: 1.0
+
+    # Trọng số learned residual cộng vào fixed text-derived class features.
+    alpha: 0.5
+
+    # Trọng số loss buộc bag query khớp các prototype keys được chọn.
+    matching_loss_weight: 0.5
+
+    # Trọng số loss điều hòa similarity giữa class features.
+    class_similarity_loss_weight: 0.5
+
+    # Chuẩn tối đa khi clip gradient của các adaptation parameters.
+    max_grad_norm: 1.0
+
+  # Naive sequential fine-tuning baseline; không có replay/regularizer riêng.
+  sgd: {}

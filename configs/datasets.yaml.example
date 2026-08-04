@@ -1,0 +1,52 @@
+# Copy to configs/datasets.yaml and edit local paths. The local file is ignored.
+# Never put Hugging Face tokens here; custom backbones may read HF_TOKEN.
+data_root: /mmlab_students/storageStudents/nguyenvd/Thanhld/WSI/dataset
+
+task_order:
+  - camelyon17
+  - brca
+  - rcc
+  - nsclc
+  - esca
+  - tgct
+  - cesc
+  - bracs
+  - herohe
+  - ubc_ocean
+
+# Set true to reverse task_order. A subset/reordering can also be written above.
+reverse_task_order: false
+
+annotations:
+  camelyon17: /mmlab_students/storageStudents/nguyenvd/Thuchd/Benchmark_WSI/dataset/split/slide_level_labels_all.csv
+  brca: "{data_root}/wsi_dataset_annotation/tcga_brca/tcga_brca_subset.csv"
+  rcc: "{data_root}/wsi_dataset_annotation/tcga_rcc/tcga_kidney_subset.csv"
+  nsclc: "{data_root}/wsi_dataset_annotation/tcga_nsclc/tcga_lung_subset.csv"
+  bracs: /mmlab_students/storageStudents/nguyenvd/Thuchd/Benchmark_WSI/dataset/split/brcas.csv
+  herohe: /mmlab_students/storageStudents/nguyenvd/Thuchd/Benchmark_WSI/dataset/split/herohe.csv
+  ubc_ocean: /mmlab_students/storageStudents/nguyenvd/Thuchd/Benchmark_WSI/dataset/split/ubc_ocean_clean.csv
+
+features:
+  camelyon17: /mmlab_students/storageStudents/nguyenvd/Thuchd/Benchmark_WSI/dataset/CAMELYON17/All/10x_256px_0px_overlap/features_conch_v15
+  brca: "{data_root}/TCGA-BRCA_processed/features"
+  rcc: "{data_root}/TCGA-RCC_processed/features"
+  nsclc: "{data_root}/TCGA-NSCLC_processed/features"
+  esca: "{data_root}/TCGA-ESCA_processed/features"
+  tgct: "{data_root}/TCGA-TGCT_processed/features"
+  cesc: "{data_root}/TCGA-CESC_processed/features"
+  bracs: "{data_root}/BRACS/10x_256px_0px_overlap/features_conch_v15/h5_files"
+  herohe: /mmlab_students/storageStudents/nguyenvd/Thuchd/Benchmark_WSI/dataset/HEROHE/h5_files
+  ubc_ocean: /mmlab_students/storageStudents/nguyenvd/Thuchd/Benchmark_WSI/dataset/UBC-OCEAN/ubc-ocean/mag10_all/10x_256px_0px_overlap/features_conch_v15
+
+split_dirs:
+  camelyon17: /mmlab_students/storageStudents/nguyenvd/Thuchd/Benchmark_WSI/dataset/split/task_camelyon17
+  brca: "{data_root}/wsi_dataset_annotation/tcga_brca"
+  rcc: "{data_root}/wsi_dataset_annotation/tcga_rcc"
+  nsclc: "{data_root}/wsi_dataset_annotation/tcga_nsclc"
+  esca: "{data_root}/wsi_dataset_annotation/tcga_esca"
+  tgct: "{data_root}/wsi_dataset_annotation/tcga_tgct"
+  cesc: "{data_root}/wsi_dataset_annotation/tcga_cesc"
+  bracs: /mmlab_students/storageStudents/nguyenvd/Thuchd/Benchmark_WSI/dataset/split/task_bracs
+  herohe: /mmlab_students/storageStudents/nguyenvd/Thuchd/Benchmark_WSI/dataset/split/task_herohe
+  ubc_ocean: /mmlab_students/storageStudents/nguyenvd/Thuchd/Benchmark_WSI/dataset/split/task_ubc_ocean
+

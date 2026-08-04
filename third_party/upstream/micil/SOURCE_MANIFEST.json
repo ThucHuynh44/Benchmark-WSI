@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "project": "MICIL",
+  "repository": "https://github.com/cvblab/MICIL.git",
+  "commit": "7c27d197ca522a3cfe3b0629152a07858f707bdf",
+  "core_entrypoint": "code_py/MICIL_train.py",
+  "notes": [
+    "The pinned upstream revision contains no micil.py file.",
+    "code_py/MICIL_train.py is the core algorithm source for the active integration."
+  ],
+  "snapshot_policy": "byte-identical",
+  "license": {
+    "path": null,
+    "spdx": null,
+    "status": "NO_LICENSE_FILE_AT_PINNED_COMMIT"
+  },
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "c52dfba5263fb309baf7c385c2ce2ece403a5a922f265f6a52b59caf7a310400"
+    },
+    {
+      "path": "code_py/MICIL_train.py",
+      "sha256": "ae860a34b3f931768ff47d2f80e8aff1fe3b2b394887931a2582a57b32e2118f"
+    },
+    {
+      "path": "code_py/utils_MICIL.py",
+      "sha256": "7dc4793f32a9b9679388cc907855779a435be219b1edab392bf97fa864a08530"
+    },
+    {
+      "path": "code_py/utils_MIL_models.py",
+      "sha256": "41cea539e6d3e4050ad8f7a64f940092e8a5fa47e19cb98fd9369b186efabf9d"
+    },
+    {
+      "path": "main_MICIL.py",
+      "sha256": "0c8028dc74b3bf9550d68933b2e656cc477a9cfc79afb96454a811b3167a42d5"
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "722070483b2b3e77994ff87bc482991a6db242cd8a66c43a9732f43e13e5e27a"
+    }
+  ]
+}

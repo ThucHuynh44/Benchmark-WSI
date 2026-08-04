@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "project": "LWSR",
+  "repository": "https://github.com/OliverZXY/LWSR.git",
+  "commit": "7620ef944d7dabbb20504744fd244633fc3841d1",
+  "core_entrypoint": "models/lwsr.py",
+  "snapshot_policy": "byte-identical",
+  "license": {
+    "path": "LICENSE",
+    "spdx": "MIT"
+  },
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha256": "b733d783257ae2f7e553a4978d1d58c220be3daa547b2553b9576a963491ceb0"
+    },
+    {
+      "path": "README.md",
+      "sha256": "e8ba771f4ce459df9718fa7b25a8c33c0ad3ce00d19cdee6985d0851cc32253c"
+    },
+    {
+      "path": "backbone/vit.py",
+      "sha256": "898d56c106c2a1a84415c23501e0ad31d8e6c918f198e4219c50702f1cf7fe5f"
+    },
+    {
+      "path": "models/lwsr.py",
+      "sha256": "b031fdbe5d07f6e97d91a5386c16f2c124d349a1caf4b08f06328271f4ddd406"
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "0f5f89542def26efd379c6f3599f461f413dba3a7825eb578af57391793ca99d"
+    },
+    {
+      "path": "utils/buffer.py",
+      "sha256": "c631addd4c3047a98a5f61e50303085477150d0f373cfe974e77b24e3c2a365b"
+    },
+    {
+      "path": "utils/loss.py",
+      "sha256": "199c053aee7442972dc04f0ac76c2bef02489e8ff720ca8fd2e5deea4b800a44"
+    }
+  ]
+}

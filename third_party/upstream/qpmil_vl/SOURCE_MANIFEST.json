@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "project": "QPMIL-VL",
+  "repository": "https://github.com/can-can-ya/QPMIL-VL.git",
+  "commit": "3a7a7698582dec866d43eb748f8c3599f7be4391",
+  "core_entrypoint": "models/model_il.py",
+  "snapshot_policy": "byte-identical",
+  "license": {
+    "path": "LICENSE",
+    "spdx": "CC-BY-NC-ND-4.0"
+  },
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha256": "e7e2efbb4575317076f44c8843579a017cb0718dbc4da4f72aff51ec8552ca80"
+    },
+    {
+      "path": "README.md",
+      "sha256": "8f2d6a93f4dd726cb83b884898faa9cadd4da2094fc7c9843da134f6b13989ce"
+    },
+    {
+      "path": "class_ensemble/class_ensemble.json",
+      "sha256": "09b6a32d6a572516abde28be494db6e0c67974f663b7ccc8e257c88c687a6a8a"
+    },
+    {
+      "path": "configs/main.yaml",
+      "sha256": "22e7c7b622010d451eb776a897ba65cbdaf94fbdc985436c8ba8fae83720a758"
+    },
+    {
+      "path": "manager/manager.py",
+      "sha256": "eae2d8e25f36df277bbc5bd6a8770e7eb105871b6eb0b0fabfd4f96f012aa852"
+    },
+    {
+      "path": "models/model_il.py",
+      "sha256": "f524ff171cd8f3fd6045109a78e2eed1eea845448e98fa3fd05f502e4f17b06e"
+    },
+    {
+      "path": "models/model_utils.py",
+      "sha256": "591111263e1a7f198f0f78ab8a765c50c2e66f0ddeae74b2ac94ddf6e3c6a640"
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "0ec9edbdbd71c47ecc871c8fccd5e71c9f22fc2ef980ab14a4a101350a7f4917"
+    }
+  ]
+}
