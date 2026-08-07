@@ -299,6 +299,52 @@ class FeatherMILBackbone(_AdapterBase):
         return classifier
 
 
+def _initialize_feather_classifier(
+    remote_model: nn.Module,
+    num_classes: int,
+) -> nn.Linear:
+    """Attach a finite downstream classifier to a native FEATHER model.
+
+    The pinned FEATHER checkpoint was published with ``num_classes=0`` and
+    therefore contains zero-sized classifier tensors.  Asking Transformers to
+    resize those tensors via ``ignore_mismatched_sizes`` can leave the remote
+    classifier backed by uninitialized memory.  Load the pretrained aggregator
+    in its native form and use FEATHER's own initializer instead.
+    """
+    num_classes = int(num_classes)
+    if num_classes <= 0:
+        raise ValueError(f"FEATHER num_classes must be positive, got {num_classes}")
+
+    initializer = getattr(remote_model, "initialize_classifier", None)
+    core = getattr(remote_model, "model", None)
+    if not callable(initializer) or core is None:
+        raise TypeError(
+            "FEATHER remote model must expose model and initialize_classifier()"
+        )
+    initializer(num_classes)
+
+    classifier = getattr(core, "classifier", None)
+    if not isinstance(classifier, nn.Linear):
+        raise TypeError(
+            "FEATHER initialize_classifier() must create an nn.Linear classifier"
+        )
+    if classifier.out_features != num_classes:
+        raise ValueError(
+            "FEATHER classifier output mismatch: "
+            f"expected {num_classes}, got {classifier.out_features}"
+        )
+    if not all(torch.isfinite(parameter).all() for parameter in classifier.parameters()):
+        raise RuntimeError("FEATHER classifier initialization produced NaN or Inf")
+
+    # Keep checkpoint/profile metadata consistent with the downstream head.
+    config = getattr(remote_model, "config", None)
+    if config is not None:
+        config.num_classes = num_classes
+    if hasattr(core, "num_classes"):
+        core.num_classes = num_classes
+    return classifier
+
+
 def build_pretrained_backbone(args, num_classes: int) -> nn.Module:
     name = str(args.backbone).lower()
     defaults = {
@@ -318,9 +364,10 @@ def build_pretrained_backbone(args, num_classes: int) -> nn.Module:
     if name == "titan":
         vision_encoder = _load_titan_vision(snapshot, revision)
         return TitanMILBackbone(vision_encoder, num_classes, freeze=freeze)
-    remote_model = _load_auto_model(
-        snapshot,
-        num_classes=int(num_classes),
-        ignore_mismatched_sizes=True,
-    )
+    # Load FEATHER with its native num_classes=0 checkpoint, then attach a
+    # freshly initialized downstream head.  This preserves all pretrained
+    # patch-embedding and attention weights without trusting mismatched-shape
+    # initialization in the Transformers dynamic-module loader.
+    remote_model = _load_auto_model(snapshot)
+    _initialize_feather_classifier(remote_model, num_classes)
     return FeatherMILBackbone(remote_model, freeze=freeze)

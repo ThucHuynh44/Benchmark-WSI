@@ -4,7 +4,11 @@ from types import SimpleNamespace
 import torch
 
 from backbone.generic_mil import GenericMILBackbone
-from backbone.pretrained_mil import FeatherMILBackbone, TitanMILBackbone
+from backbone.pretrained_mil import (
+    FeatherMILBackbone,
+    TitanMILBackbone,
+    _initialize_feather_classifier,
+)
 from models.utils.continual_model import ContinualModel
 
 
@@ -40,6 +44,22 @@ class FakeFeather(torch.nn.Module):
         }}
 
 
+class FakeNativeFeather(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = FakeFeatherCore(num_classes=0)
+        del self.model.classifier
+        self.model.num_classes = 0
+        self.config = SimpleNamespace(num_classes=0)
+
+    def initialize_classifier(self, num_classes):
+        self.model.classifier = torch.nn.Linear(512, int(num_classes))
+        torch.nn.init.kaiming_uniform_(
+            self.model.classifier.weight, nonlinearity="relu"
+        )
+        torch.nn.init.zeros_(self.model.classifier.bias)
+
+
 class NativeAdapterTests(unittest.TestCase):
     def setUp(self):
         self.features = torch.randn(19, 768)
@@ -71,6 +91,18 @@ class NativeAdapterTests(unittest.TestCase):
         frozen = FeatherMILBackbone(FakeFeather(), freeze=True)
         self.assertFalse(any(parameter.requires_grad for parameter in frozen.model.model.encoder.parameters()))
         self.assertTrue(all(parameter.requires_grad for parameter in frozen.model.model.classifier.parameters()))
+
+    def test_feather_downstream_classifier_is_explicitly_initialized(self):
+        remote = FakeNativeFeather()
+        classifier = _initialize_feather_classifier(remote, 27)
+        self.assertEqual(classifier.in_features, 512)
+        self.assertEqual(classifier.out_features, 27)
+        self.assertEqual(remote.config.num_classes, 27)
+        self.assertEqual(remote.model.num_classes, 27)
+        self.assertTrue(all(
+            torch.isfinite(parameter).all() for parameter in classifier.parameters()
+        ))
+        self.assertTrue(torch.equal(classifier.bias, torch.zeros_like(classifier.bias)))
 
 
 class SamplingTests(unittest.TestCase):

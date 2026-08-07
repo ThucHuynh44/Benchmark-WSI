@@ -72,7 +72,7 @@ common:
   # - {method}: tên phương pháp; {backbone}: slide aggregator.
   # - {buffer_tag}: buffer30 nếu có buffer_size=30, ngược lại là nobuffer.
   # Có thể dùng {buffer_size} nếu muốn giá trị thô (method không buffer -> na).
-  exp_desc: "{method}_{backbone}_{buffer_tag}_10tasks"
+  exp_desc: "reverse/{method}_{backbone}_{buffer_tag}_10tasks_reverse"
 
   # Ghi legacy summary results/<exp_desc>/fold_<fold>.csv.
   # Canonical evaluation artifacts vẫn luôn được ghi sau các task/fold.
@@ -116,14 +116,14 @@ methods:
   agem:
     # Sức chứa tối đa của replay buffer, đơn vị là WSI bag.
     # Adapter A-GEM hiện thêm một bag vào buffer sau mỗi task.
-    buffer_size: 30
+    buffer_size: 10
 
     # Tham số replay tương thích CLI; WSI Buffer hiện lấy 1 replay bag/lần.
     minibatch_size: 1
 
   derpp:
     # Sức chứa reservoir replay buffer, đơn vị là WSI bag.
-    buffer_size: 30
+    buffer_size: 10
 
     # Số replay bag yêu cầu; WSI Buffer chuẩn hiện lấy 1 bag/lần gọi.
     minibatch_size: 1
@@ -136,7 +136,7 @@ methods:
 
   er_ace:
     # Sức chứa reservoir replay buffer, đơn vị là WSI bag.
-    buffer_size: 30
+    buffer_size: 10
 
     # Số replay bag yêu cầu; WSI Buffer chuẩn hiện lấy 1 bag/lần gọi.
     minibatch_size: 1
@@ -150,7 +150,7 @@ methods:
 
   gdumb:
     # Số WSI bag tối đa được giữ; model chỉ fit buffer sau task cuối.
-    buffer_size: 30
+    buffer_size: 10
 
     # Giữ để tương thích rehearsal CLI; fit GDumb hiện duyệt từng bag trong buffer.
     minibatch_size: 1
@@ -173,7 +173,7 @@ methods:
 
   lwsr:
     # Sức chứa variable-length replay reservoir, đơn vị là WSI bag.
-    buffer_size: 10
+    buffer_size: 30
 
     # Số replay bags cũ tối đa lấy từ buffer cho mỗi optimizer update.
     minibatch_size: 1
@@ -182,7 +182,7 @@ methods:
     bags_per_update: 4
 
     # Số patch tối đa lưu cho mỗi replay bag để giới hạn RAM/GPU memory.
-    buffer_max_patches: 400
+    buffer_max_patches: 0
 
     # Trọng số pair/similarity loss trên slide embeddings.
     pair_loss_weight: 1.0
@@ -208,7 +208,7 @@ methods:
     micil_weight_norm: true
 
     # Sức chứa replay reservoir; chỉ có hiệu lực khi micil_replay=true.
-    buffer_size: 30
+    buffer_size: 10
 
     # Số replay bags/update; chỉ có hiệu lực khi micil_replay=true.
     minibatch_size: 1
@@ -217,7 +217,7 @@ methods:
     bags_per_update: 1
 
     # Số patch tối đa lưu trong mỗi replay bag.
-    buffer_max_patches: 400
+    buffer_max_patches: 0
 
     # Trọng số class-balanced cross-entropy loss.
     ce_loss_weight: 1.0
