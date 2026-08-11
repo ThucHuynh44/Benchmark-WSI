@@ -134,6 +134,7 @@ def _unpack_bag(features, coords=None, patch_size_level0=None) -> Tuple[torch.Te
 
 class _AdapterBase(nn.Module):
     supports_ssl = False
+    has_genuine_patch_attention = False
 
     def _finish(self, logits, attention, features):
         if logits.ndim == 1:
@@ -188,6 +189,8 @@ class _AdapterBase(nn.Module):
 class TitanMILBackbone(_AdapterBase):
     """TITAN vision encoder with a stream-wide classification head."""
 
+    has_genuine_patch_attention = False
+
     def __init__(self, vision_encoder: nn.Module, num_classes: int, freeze: bool = False):
         super().__init__()
         self.vision_encoder = vision_encoder
@@ -235,6 +238,8 @@ class TitanMILBackbone(_AdapterBase):
 class FeatherMILBackbone(_AdapterBase):
     """Pretrained FEATHER ABMIL model normalized to ConSlide's contract."""
 
+    has_genuine_patch_attention = True
+
     def __init__(self, model: nn.Module, freeze: bool = False):
         super().__init__()
         self.model = model
@@ -271,6 +276,10 @@ class FeatherMILBackbone(_AdapterBase):
         slide_features = results.get("slide_feats", log.get("slide_feats"))
         if logits is None:
             raise ValueError("FEATHER output is missing logits")
+        if attention is None:
+            raise ValueError(
+                "FEATHER output is missing the requested genuine patch attention"
+            )
         return logits, attention, slide_features
 
     def forward(self, features, coords=None, patch_size_level0=None, returnt="out", **_):

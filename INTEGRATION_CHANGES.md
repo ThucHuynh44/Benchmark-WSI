@@ -1,4 +1,4 @@
-# LWSR, MICIL, and QPMIL-VL integration changes
+# AMIL, LWSR, MICIL, and QPMIL-VL integration changes
 
 This file records the boundary between the byte-identical upstream snapshots
 under `third_party/upstream/` and the active ConSlide implementations under
@@ -18,6 +18,10 @@ as immutable and also checks that active runtime modules do not import them.
 The pinned MICIL repository has neither a `micil.py` nor a license file;
 `MICIL_train.py` is therefore the recorded algorithm source for the active
 adapter.
+
+AMIL is deliberately absent from this table and from `third_party/upstream/`.
+Its active implementation is a paper reimplementation; no byte-identical
+official source snapshot is represented by this repository.
 
 LWSR retains its upstream MIT license. MICIL and QPMIL-VL are marked
 `INTERNAL_RESEARCH_ONLY`. QPMIL-VL upstream is CC BY-NC-ND 4.0, so the adapted
@@ -44,9 +48,32 @@ than the fixed tensors assumed by the upstream projects:
   the best epoch is restored and the task-ending state update has completed.
 
 Configuration validation rejects unsupported backbone combinations before
-pretrained weights are loaded. All three methods require 768-D features. LWSR
-and MICIL require a trainable TITAN or FEATHER backbone; QPMIL-VL uses only its
-pinned TITAN text tower and rejects FEATHER and generic MIL.
+pretrained weights are loaded. The three snapshot-backed methods require
+768-D features. LWSR and MICIL require a trainable TITAN or FEATHER backbone;
+QPMIL-VL uses only its pinned TITAN text tower and rejects FEATHER and generic
+MIL.
+
+## AMIL active implementation
+
+AMIL combines a class-balanced Pseudo-Bag Memory Pool with Attention Knowledge
+Distillation and logit knowledge distillation. The benchmark exposes only the
+complete method and its MaxMinRand selector. GenericMIL and FEATHER are
+supported with trainable, uncapped slide backbones; TITAN is rejected because
+its current adapter does not expose genuine patch-level attention.
+
+After the best checkpoint for task `t` is restored, `save_buffer()` uses the
+full current-task WSIs to update the class-balanced reservoir. `end_task()`
+then re-forwards every retained pseudo-bag with that best model and atomically
+refreshes its cached attention, logits, and seen-class boundary. Thus all
+replay entries in task `t+1` use outputs from the previous session without
+retaining a frozen teacher. An entry's origin task remains unchanged when its
+targets are refreshed.
+
+Cached-target refresh is a Benchmark-WSI adaptation used to realize the
+previous-session teacher; it is not claimed to be an implementation detail
+published verbatim by the paper. Likewise, `pmp_k=400`, `alpha=1`, `beta=1`,
+and `kd_temperature=1` are benchmark-defined defaults rather than claimed
+paper defaults.
 
 ## LWSR active changes
 

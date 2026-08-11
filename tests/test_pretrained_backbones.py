@@ -44,6 +44,16 @@ class FakeFeather(torch.nn.Module):
         }}
 
 
+class FakeFeatherWithoutAttention(FakeFeather):
+    def forward(self, features, return_attention=True, return_slide_feats=True):
+        del return_attention, return_slide_feats
+        slide = self.model.encoder(features.mean(dim=1))
+        return {
+            "results": {"logits": self.model.classifier(slide)},
+            "log": {"slide_feats": slide},
+        }
+
+
 class FakeNativeFeather(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -103,6 +113,16 @@ class NativeAdapterTests(unittest.TestCase):
             torch.isfinite(parameter).all() for parameter in classifier.parameters()
         ))
         self.assertTrue(torch.equal(classifier.bias, torch.zeros_like(classifier.bias)))
+
+    def test_patch_attention_capabilities_are_explicit(self):
+        self.assertTrue(GenericMILBackbone.has_genuine_patch_attention)
+        self.assertTrue(FeatherMILBackbone.has_genuine_patch_attention)
+        self.assertFalse(TitanMILBackbone.has_genuine_patch_attention)
+
+    def test_feather_does_not_fallback_to_uniform_attention(self):
+        model = FeatherMILBackbone(FakeFeatherWithoutAttention())
+        with self.assertRaisesRegex(ValueError, "genuine patch attention"):
+            model([self.features, self.coords, self.patch_size])
 
 
 class SamplingTests(unittest.TestCase):

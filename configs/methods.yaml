@@ -113,17 +113,37 @@ backbones:
     backbone_max_patches: 0
 
 methods:
+  amil:
+    # Tổng sức chứa PMP, tính theo pseudo-bag/WSI chứ không phải số patch.
+    buffer_size: 30
+
+    # Số pseudo-bag replay tối đa trong mỗi optimizer update.
+    minibatch_size: 1
+
+    # Số WSI hiện tại trong mỗi logical optimizer update.
+    bags_per_update: 1
+
+    # Số patch tối đa trong pseudo-bag MaxMinRand.
+    pmp_k: 400
+
+    # Trọng số Attention KD và Logit KD. Cả hai luôn dương trong AMIL đầy đủ.
+    alpha: 1.0
+    beta: 1.0
+
+    # Paper không công bố temperature riêng; T=1 tương ứng KL trực tiếp.
+    kd_temperature: 1.0
+
   agem:
     # Sức chứa tối đa của replay buffer, đơn vị là WSI bag.
     # Adapter A-GEM hiện thêm một bag vào buffer sau mỗi task.
-    buffer_size: 10
+    buffer_size: 30
 
     # Tham số replay tương thích CLI; WSI Buffer hiện lấy 1 replay bag/lần.
     minibatch_size: 1
 
   derpp:
     # Sức chứa reservoir replay buffer, đơn vị là WSI bag.
-    buffer_size: 10
+    buffer_size: 30
 
     # Số replay bag yêu cầu; WSI Buffer chuẩn hiện lấy 1 bag/lần gọi.
     minibatch_size: 1
@@ -136,7 +156,7 @@ methods:
 
   er_ace:
     # Sức chứa reservoir replay buffer, đơn vị là WSI bag.
-    buffer_size: 10
+    buffer_size: 30
 
     # Số replay bag yêu cầu; WSI Buffer chuẩn hiện lấy 1 bag/lần gọi.
     minibatch_size: 1
@@ -182,7 +202,7 @@ methods:
     bags_per_update: 4
 
     # Số patch tối đa lưu cho mỗi replay bag để giới hạn RAM/GPU memory.
-    buffer_max_patches: 0
+    buffer_max_patches: 400
 
     # Trọng số pair/similarity loss trên slide embeddings.
     pair_loss_weight: 1.0
@@ -208,7 +228,7 @@ methods:
     micil_weight_norm: true
 
     # Sức chứa replay reservoir; chỉ có hiệu lực khi micil_replay=true.
-    buffer_size: 10
+    buffer_size: 30
 
     # Số replay bags/update; chỉ có hiệu lực khi micil_replay=true.
     minibatch_size: 1
@@ -217,7 +237,7 @@ methods:
     bags_per_update: 1
 
     # Số patch tối đa lưu trong mỗi replay bag.
-    buffer_max_patches: 0
+    buffer_max_patches: 400
 
     # Trọng số class-balanced cross-entropy loss.
     ce_loss_weight: 1.0

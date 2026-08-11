@@ -38,8 +38,8 @@ checkpoints below `checkpoints/<exp_desc>/fold_<fold>/`.
 
 ## Method YAML configs
 
-Configs for A-GEM, DER++, ER-ACE, online EWC, GDumb, Joint, LwF, SGD, LWSR,
-MICIL, and QPMIL-VL are combined in `configs/methods.yaml`. Select one with
+Configs for AMIL, A-GEM, DER++, ER-ACE, online EWC, GDumb, Joint, LwF, SGD,
+LWSR, MICIL, and QPMIL-VL are combined in `configs/methods.yaml`. Select one with
 `--model`:
 
 ```
@@ -59,6 +59,39 @@ python utils/main.py --config configs/methods.yaml --model ewc_on \
 These files contain baseline starting values rather than tuned best
 hyperparameters. Edit `configs/datasets.yaml` for local data paths; keep tokens
 out of both dataset and method configs.
+
+### AMIL (PMP + AKD + Logit KD)
+
+AMIL is the benchmark name for a paper reimplementation of Attention Knowledge
+Distillation (AKD), logit knowledge distillation, and the Pseudo-Bag Memory
+Pool (PMP). The benchmark always enables the complete method, uses only the
+MaxMinRand patch selector, and keeps a class-balanced reservoir of 30
+pseudo-bags. Run its two supported backbone configurations explicitly:
+
+```
+python utils/main.py --config configs/methods.yaml \
+  --model amil --backbone generic_mil
+
+python utils/main.py --config configs/methods.yaml \
+  --model amil --backbone feather
+```
+
+AMIL requires a trainable backbone with genuine patch-level attention and a
+full input bag (`backbone_max_patches=0`). TITAN is intentionally unsupported:
+its current adapter synthesizes uniform attention when the encoder does not
+return patch attention.
+
+After each task's best checkpoint is restored, PMP selects at most 400 patches
+per accepted WSI. At `end_task`, the best student re-forwards every retained
+pseudo-bag and caches its attention and logits. Those cached outputs implement
+the previous-session distillation target for the next task without retaining a
+frozen teacher model. This refresh is a Benchmark-WSI adaptation; it is not
+claimed as an implementation detail published verbatim by the paper.
+
+The AMIL values `pmp_k=400`, `alpha=1`, `beta=1`, and
+`kd_temperature=1` are benchmark-defined defaults because the available paper
+and supplementary material do not publish concrete values for the first three
+or a separate KD temperature. They must not be described as paper defaults.
 
 ### LWSR, MICIL, and QPMIL-VL
 

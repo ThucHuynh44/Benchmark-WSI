@@ -14,15 +14,16 @@ class MethodConfigTests(unittest.TestCase):
     def test_all_method_configs_parse(self):
         config_path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         expected = {
-            "agem", "derpp", "er_ace", "ewc_on",
+            "amil", "agem", "derpp", "er_ace", "ewc_on",
             "gdumb", "joint", "lwsr", "lwf", "micil", "qpmil_vl", "sgd",
         }
         raw = yaml.safe_load(config_path.read_text())
         self.assertEqual(set(raw["methods"]), expected)
-        baseline_methods = expected - {"lwsr", "micil", "qpmil_vl"}
+        baseline_methods = expected - {"amil", "lwsr", "micil", "qpmil_vl"}
         supported = [
             *((method, backbone) for method in baseline_methods
               for backbone in ("generic_mil", "titan", "feather")),
+            *(("amil", backbone) for backbone in ("generic_mil", "feather")),
             *((method, backbone) for method in ("lwsr", "micil")
               for backbone in ("titan", "feather")),
             ("qpmil_vl", "titan"),
@@ -49,22 +50,30 @@ class MethodConfigTests(unittest.TestCase):
                 self.assertGreater(args.early_stopping_patience, 0)
                 self.assertGreaterEqual(args.early_stopping_min_epoch, 0)
                 self.assertGreaterEqual(args.early_stopping_min_delta, 0.0)
-                self.assertFalse(args.evaluate_fwt)
+                self.assertEqual(args.evaluate_fwt, raw["common"]["evaluate_fwt"])
                 self.assertEqual(args.feature_dim, 768)
                 buffer_size = raw["methods"][method].get("buffer_size")
                 buffer_tag = (
                     f"buffer{buffer_size}" if buffer_size is not None else "nobuffer"
                 )
-                self.assertEqual(
-                    args.exp_desc, f"{method}_{backbone}_{buffer_tag}_10tasks"
-                )
+                self.assertEqual(args.exp_desc, raw["common"]["exp_desc"].format(
+                    method=method,
+                    backbone=backbone,
+                    buffer_tag=buffer_tag,
+                    buffer_size=buffer_size if buffer_size is not None else "na",
+                ))
                 expected_patch_budget = 400 if backbone == "titan" else 0
                 self.assertEqual(args.backbone_max_patches, expected_patch_budget)
 
     def test_new_method_defaults(self):
         path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         raw = yaml.safe_load(path.read_text())
-        cases = {"lwsr": "titan", "micil": "feather", "qpmil_vl": "titan"}
+        cases = {
+            "amil": "generic_mil",
+            "lwsr": "titan",
+            "micil": "feather",
+            "qpmil_vl": "titan",
+        }
         for method, backbone in cases.items():
             with self.subTest(method=method), patch.object(
                 sys,
@@ -81,9 +90,13 @@ class MethodConfigTests(unittest.TestCase):
     def test_new_methods_reject_unsupported_backbones_and_freezing(self):
         path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         invalid = [
+            ("amil", "titan", []),
             ("lwsr", "generic_mil", []),
             ("micil", "generic_mil", []),
             ("qpmil_vl", "feather", []),
+            ("amil", "generic_mil", ["--backbone_freeze"]),
+            ("amil", "generic_mil", ["--backbone_max_patches", "1"]),
+            ("amil", "feather", ["--feature_dim", "512"]),
             ("lwsr", "titan", ["--backbone_freeze"]),
             ("micil", "feather", ["--backbone_freeze"]),
             ("lwsr", "titan", ["--feature_dim", "512"]),
@@ -174,7 +187,13 @@ class MethodConfigTests(unittest.TestCase):
         self.assertFalse(args.micil_weight_norm)
         self.assertEqual(args.buffer_size, 17)
         self.assertEqual(args.bags_per_update, 2)
-        self.assertEqual(args.exp_desc, "micil_titan_buffer17_10tasks")
+        raw = yaml.safe_load(path.read_text())
+        self.assertEqual(args.exp_desc, raw["common"]["exp_desc"].format(
+            method="micil",
+            backbone="titan",
+            buffer_tag="buffer17",
+            buffer_size=17,
+        ))
 
     def test_configs_do_not_contain_credentials(self):
         path = Path(__file__).parents[1] / "configs" / "methods.yaml"

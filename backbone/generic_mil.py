@@ -40,6 +40,7 @@ class GenericMILBackbone(nn.Module):
     """Configurable gated-attention MIL model for arbitrary feature vectors."""
 
     supports_ssl = False
+    has_genuine_patch_attention = True
 
     def __init__(
         self,
