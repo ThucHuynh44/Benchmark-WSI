@@ -280,6 +280,12 @@ class FeatherMILBackbone(_AdapterBase):
             raise ValueError(
                 "FEATHER output is missing the requested genuine patch attention"
             )
+        if not torch.is_tensor(attention) or not torch.isfinite(attention).all():
+            raise ValueError("FEATHER attention logits must be a finite tensor")
+        # The pinned FEATHER implementation exposes A_base (pre-softmax
+        # attention logits) even though its pooling path uses softmax(A_base).
+        # Publish the actual pooling weights through the shared MIL contract.
+        attention = F.softmax(attention.float(), dim=-1)
         return logits, attention, slide_features
 
     def forward(self, features, coords=None, patch_size_level0=None, returnt="out", **_):

@@ -92,6 +92,32 @@ class GenericMILBackbone(nn.Module):
         auxiliary_loss = logits.sum() * 0.0
         return logits, probabilities, predictions, attention, auxiliary_loss
 
+    def forward_with_embedding(self, features, coords=None, patch_size_level0=None):
+        """Return logits, slide embedding, and genuine pooling attention.
+
+        This mirrors the richer contract exposed by the native TITAN/FEATHER
+        adapters so continual methods can consume all three values with one
+        encoder pass.
+        """
+        del patch_size_level0
+        features, _ = _unpack_input(features, coords)
+        if features.shape[-1] != self.input_dim:
+            raise ValueError(
+                f"Backbone expects feature_dim={self.input_dim}, "
+                f"but the HDF5 bag has feature_dim={features.shape[-1]}."
+            )
+        embedding, attention = self.forward_features(features)
+        logits = self.classifier(embedding)
+        return {
+            "logits": logits,
+            "embedding": embedding,
+            "attention": attention,
+            "auxiliary_loss": logits.sum() * 0.0,
+        }
+
+    def get_classifier(self) -> nn.Linear:
+        return self.classifier
+
     def get_params(self) -> torch.Tensor:
         return torch.cat([parameter.view(-1) for parameter in self.parameters()])
 

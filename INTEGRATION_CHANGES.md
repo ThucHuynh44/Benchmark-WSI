@@ -1,4 +1,4 @@
-# AMIL, LWSR, MICIL, and QPMIL-VL integration changes
+# ATLAS-MIL, AMIL, LWSR, MICIL, OWLoRA, and QPMIL-VL integration changes
 
 This file records the boundary between the byte-identical upstream snapshots
 under `third_party/upstream/` and the active ConSlide implementations under
@@ -8,6 +8,7 @@ under `third_party/upstream/` and the active ConSlide implementations under
 
 | Method | Frozen upstream revision | Core snapshot | Active implementation |
 | --- | --- | --- | --- |
+| OWLoRA | `9fd667994eb57e3960e36970a9509a8217d84a22` | `third_party/upstream/comel_owlora/continual/main/continual_bag/cdatmil_ppl_owlora_trainer.py` | `models/owlora.py` |
 | LWSR | `7620ef944d7dabbb20504744fd244633fc3841d1` | `third_party/upstream/lwsr/models/lwsr.py` | `models/lwsr.py` |
 | MICIL | `7c27d197ca522a3cfe3b0629152a07858f707bdf` | `third_party/upstream/micil/code_py/MICIL_train.py` | `models/micil.py` |
 | QPMIL-VL | `3a7a7698582dec866d43eb748f8c3599f7be4391` | `third_party/upstream/qpmil_vl/models/model_il.py` | `models/qpmil_vl.py` |
@@ -15,18 +16,18 @@ under `third_party/upstream/` and the active ConSlide implementations under
 Each snapshot has a `SOURCE_MANIFEST.json` containing its repository URL,
 commit, file list, and SHA-256 digests. The provenance test treats those files
 as immutable and also checks that active runtime modules do not import them.
-The pinned MICIL repository has neither a `micil.py` nor a license file;
-`MICIL_train.py` is therefore the recorded algorithm source for the active
-adapter.
+The pinned CoMEL and MICIL repositories have no license file. CoMEL's
+continual-bag trainer and `MICIL_train.py` are therefore recorded as the core
+algorithm sources for their active adapters.
 
 AMIL is deliberately absent from this table and from `third_party/upstream/`.
 Its active implementation is a paper reimplementation; no byte-identical
 official source snapshot is represented by this repository.
 
-LWSR retains its upstream MIT license. MICIL and QPMIL-VL are marked
-`INTERNAL_RESEARCH_ONLY`. QPMIL-VL upstream is CC BY-NC-ND 4.0, so the adapted
-implementation must not be pushed to a public repository or otherwise
-distributed without a separate rights review and any required permission.
+LWSR retains its upstream MIT license. CoMEL-OWLoRA, MICIL, and QPMIL-VL are
+marked `INTERNAL_RESEARCH_ONLY`. The adapted implementations must not be pushed
+to a public repository or otherwise distributed without a separate rights
+review and any required permission.
 
 ## Common ConSlide contract
 
@@ -48,10 +49,46 @@ than the fixed tensors assumed by the upstream projects:
   the best epoch is restored and the task-ending state update has completed.
 
 Configuration validation rejects unsupported backbone combinations before
-pretrained weights are loaded. The three snapshot-backed methods require
-768-D features. LWSR and MICIL require a trainable TITAN or FEATHER backbone;
+pretrained weights are loaded. The four snapshot-backed methods require 768-D
+features. LWSR, MICIL, and OWLoRA require a trainable TITAN or FEATHER backbone;
 QPMIL-VL uses only its pinned TITAN text tower and rejects FEATHER and generic
 MIL.
+
+## ATLAS-MIL active implementation
+
+ATLAS-MIL is a native research implementation rather than a vendored upstream
+snapshot. It uses FEATHER (or `generic_mil` for synthetic tests) for genuine
+patch attention and loads the separately pinned TITAN text tower only long
+enough to produce fixed 27-class semantic anchors. The active model freezes the
+base slide aggregator, trains fixed-size active LoRA factors, and compresses
+them into fixed-rank merged factors at every task boundary.
+
+Replay stores class-balanced MaxMinRand pseudo-bags with cached attention and
+slide embeddings. After best-checkpoint restoration, ATLAS first updates the
+reservoir, merges the task adapter, recomputes current-class atlas statistics
+with the compressed model, and finally refreshes every replay target. The
+hybrid prompt/centroid logits preserve the benchmark's global-classifier output
+contract and require no task ID at inference. CICS, CGRL, alternate selectors,
+and logit distillation are intentionally outside this implementation.
+
+## OWLoRA active changes
+
+The active adapter retains CoMEL's weighted low-rank residuals, initial SVD
+truncation, intra-adapter orthogonality penalty, and projection of each new
+adapter's gradients away from the frozen reference and prior adapters. It
+deliberately excludes CDATMIL and PPL and instead wraps eligible `nn.Linear`
+objects inside the native TITAN or FEATHER slide encoder. The global classifier
+is never wrapped.
+
+Task 0 contains no adapter and fine-tunes the base encoder. After the restored
+best Task-0 checkpoint, the method creates the frozen reference and first task
+adapter. Each subsequent non-final task appends exactly one adapter. Training
+uses global labels and cross-entropy over all seen logits, while old and future
+classifier rows are restored after AdamW steps so only the current rows change.
+Dynamic adapter shapes are inferred from state-dict keys and materialized before
+strict checkpoint loading. Projection uses associative products rather than
+forming hidden-dimension-square matrices, preserving the source formula with a
+smaller memory peak.
 
 ## AMIL active implementation
 

@@ -30,6 +30,24 @@ class TrainingResourceTests(unittest.TestCase):
         self.assertFalse(stats["cuda_available"])
         self.assertIsNone(stats["peak_gpu_allocated_mib"])
         self.assertIsNone(stats["peak_gpu_reserved_mib"])
+        self.assertEqual(stats["initial_total_parameters"], 26)
+        self.assertEqual(stats["final_total_parameters"], 26)
+        self.assertEqual(stats["parameter_growth"], 0)
+
+    def test_resource_statistics_records_dynamic_parameter_growth(self):
+        model = SimpleNamespace(device=torch.device("cpu"))
+        stats = _resource_statistics(
+            model,
+            {"total_parameters": 42, "trainable_parameters": 18},
+            initial_parameters={
+                "total_parameters": 26,
+                "trainable_parameters": 14,
+            },
+        )
+        self.assertEqual(stats["total_parameters"], 42)
+        self.assertEqual(stats["initial_total_parameters"], 26)
+        self.assertEqual(stats["final_total_parameters"], 42)
+        self.assertEqual(stats["parameter_growth"], 16)
 
 
 class EarlyStoppingTests(unittest.TestCase):

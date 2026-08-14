@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "project": "CoMEL-OWLoRA",
+  "repository": "https://github.com/Hyun1A/CoMEL.git",
+  "commit": "9fd667994eb57e3960e36970a9509a8217d84a22",
+  "core_entrypoint": "continual/main/continual_bag/cdatmil_ppl_owlora_trainer.py",
+  "notes": [
+    "Only the files needed to trace the OWLoRA continual-bag implementation are preserved.",
+    "The active benchmark adapter excludes CDATMIL and PPL."
+  ],
+  "snapshot_policy": "byte-identical",
+  "license": {
+    "path": null,
+    "spdx": null,
+    "status": "NO_LICENSE_FILE_AT_PINNED_COMMIT"
+  },
+  "files": [
+    {
+      "path": "continual/main/continual_bag/cdatmil_ppl_owlora_trainer.py",
+      "sha256": "5f80f0b236104da7493143d9b09bb79fce22a7c2b3121b57c873ae138e53a701"
+    },
+    {
+      "path": "continual/modules/cl_modules/cdatmil_owlora.py",
+      "sha256": "315f917c755127f70657300ee2d38473dcd086c2c30a5661caa78224c960b2d7"
+    },
+    {
+      "path": "continual/modules/cl_modules/lora.py",
+      "sha256": "e2374439842f2332c524665af92efe6851baf1f647be04502af2103b0bb919b0"
+    },
+    {
+      "path": "continual/shell_scripts/continual_bag/run_cdatmil_ppl_owlora.sh",
+      "sha256": "37b6f0a7185651a695ba2af3b6a067e3b59dc7ec5cc5ce5f8b094a8e89ffa5c6"
+    }
+  ]
+}

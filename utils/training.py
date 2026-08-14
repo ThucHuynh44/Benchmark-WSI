@@ -662,9 +662,24 @@ def _start_cuda_peak_tracking(model) -> None:
         torch.cuda.reset_peak_memory_stats(device)
 
 
-def _resource_statistics(model, parameters: Dict[str, int]) -> Dict[str, object]:
+def _resource_statistics(
+    model,
+    parameters: Dict[str, int],
+    *,
+    initial_parameters: Dict[str, int] | None = None,
+) -> Dict[str, object]:
     """Collect fold-level parameter and peak CUDA-memory statistics."""
     resources: Dict[str, object] = dict(parameters)
+    initial = parameters if initial_parameters is None else initial_parameters
+    resources.update({
+        "initial_total_parameters": int(initial["total_parameters"]),
+        "initial_trainable_parameters": int(initial["trainable_parameters"]),
+        "final_total_parameters": int(parameters["total_parameters"]),
+        "final_trainable_parameters": int(parameters["trainable_parameters"]),
+        "parameter_growth": int(
+            parameters["total_parameters"] - initial["total_parameters"]
+        ),
+    })
     device = _cuda_device(model)
     if device is None:
         resources.update({
@@ -776,11 +791,11 @@ def _artifact_context(state, args, dataset, model, fold, after_task):
 
 def train(model: ContinualModel, dataset: ContinualDataset, args: Namespace, fold: int) -> None:
     model.to(model.device)
-    parameters = parameter_statistics(model.net)
+    initial_parameters = parameter_statistics(model.net)
     print(
         "[resources] model parameters: "
-        f"total={parameters['total_parameters']:,}, "
-        f"trainable={parameters['trainable_parameters']:,}"
+        f"total={initial_parameters['total_parameters']:,}, "
+        f"trainable={initial_parameters['trainable_parameters']:,}"
     )
     print(
         "[early-stopping] "
@@ -960,8 +975,18 @@ def train(model: ContinualModel, dataset: ContinualDataset, args: Namespace, fol
                 csv_logger.log_result(result)
 
     artifact_state["training_times"][int(fold)] = fold_training_time
-    resources = _resource_statistics(model, parameters)
+    final_parameters = parameter_statistics(model.net)
+    resources = _resource_statistics(
+        model, final_parameters, initial_parameters=initial_parameters
+    )
     artifact_state["resource_usage"][int(fold)] = resources
+    if resources["parameter_growth"]:
+        print(
+            f"[resources] fold {fold} dynamic parameter growth: "
+            f"{resources['initial_total_parameters']:,} -> "
+            f"{resources['final_total_parameters']:,} "
+            f"({resources['parameter_growth']:+,})"
+        )
     if resources["cuda_available"]:
         print(
             f"[resources] fold {fold} peak CUDA memory: "

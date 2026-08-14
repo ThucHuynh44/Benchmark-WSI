@@ -72,8 +72,8 @@ common:
   # - {method}: tên phương pháp; {backbone}: slide aggregator.
   # - {buffer_tag}: buffer30 nếu có buffer_size=30, ngược lại là nobuffer.
   # Có thể dùng {buffer_size} nếu muốn giá trị thô (method không buffer -> na).
-  exp_desc: "reverse/{method}_{backbone}_{buffer_tag}_10tasks_reverse"
-
+  exp_desc: "forward/{method}_{backbone}_{buffer_tag}_10tasks_forward"
+  #exp_desc: "reverse/{method}_{backbone}_{buffer_tag}_10tasks_reverse"
   # Ghi legacy summary results/<exp_desc>/fold_<fold>.csv.
   # Canonical evaluation artifacts vẫn luôn được ghi sau các task/fold.
   csv_log: true
@@ -113,6 +113,30 @@ backbones:
     backbone_max_patches: 0
 
 methods:
+  atlas_mil:
+    # Full-bag genuine attention; run the primary method with --backbone feather.
+    buffer_size: 30
+    minibatch_size: 1
+    bags_per_update: 1
+    pmp_k: 400
+    atlas_rank: 8
+    atlas_nce_temperature: 0.07
+    atlas_centroid_momentum: 0.99
+    latent_mask_ratio: 0.5
+    # Set individual loss weights to zero for contribution ablations.
+    atlas_nce_weight: 1.0
+    reconstruction_weight: 1.0
+    manifold_weight: 1.0
+    attention_weight: 1.0
+    atlas_prompt_weight: 0.5
+    atlas_logit_scale: 10.0
+    atlas_lora_rank: 8
+    atlas_lora_mode: semantic
+    atlas_lora_merge_scale: 1.0
+    # Separate from FEATHER's backbone_model_id/backbone_revision.
+    atlas_text_model_id: MahmoodLab/TITAN
+    atlas_text_revision: dac6773d9961cfc75503440676ff157a2c6e8d2e
+
   amil:
     # Tổng sức chứa PMP, tính theo pseudo-bag/WSI chứ không phải số patch.
     buffer_size: 30
@@ -250,6 +274,19 @@ methods:
 
     # Temperature dùng khi distill logits cũ.
     distillation_temperature: 2.0
+
+  owlora:
+    # Rank cơ sở của task adapter; qkv Linear dùng 3 lần giá trị này như CoMEL.
+    owlora_rank: 8
+
+    # Tỷ lệ năng lượng singular-value giữ lại khi truncate base sau task đầu.
+    owlora_svd_energy: 0.99
+
+    # Trọng số regularizer trực giao của adapter task hiện tại.
+    owlora_orthogonal_weight: 1.0
+
+    # Số WSI hiện tại trong một optimizer update; không dùng replay.
+    bags_per_update: 1
 
   qpmil_vl:
     # Số cặp learnable key/prompt trong prototype pool.

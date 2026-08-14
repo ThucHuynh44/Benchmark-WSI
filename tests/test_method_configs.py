@@ -14,18 +14,23 @@ class MethodConfigTests(unittest.TestCase):
     def test_all_method_configs_parse(self):
         config_path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         expected = {
-            "amil", "agem", "derpp", "er_ace", "ewc_on",
-            "gdumb", "joint", "lwsr", "lwf", "micil", "qpmil_vl", "sgd",
+            "atlas_mil", "amil", "agem", "derpp", "er_ace", "ewc_on",
+            "gdumb", "joint", "lwsr", "lwf", "micil", "owlora",
+            "qpmil_vl", "sgd",
         }
         raw = yaml.safe_load(config_path.read_text())
         self.assertEqual(set(raw["methods"]), expected)
-        baseline_methods = expected - {"amil", "lwsr", "micil", "qpmil_vl"}
+        baseline_methods = expected - {
+            "atlas_mil", "amil", "lwsr", "micil", "owlora", "qpmil_vl"
+        }
         supported = [
             *((method, backbone) for method in baseline_methods
               for backbone in ("generic_mil", "titan", "feather")),
-            *(("amil", backbone) for backbone in ("generic_mil", "feather")),
+            *((method, backbone) for method in ("atlas_mil", "amil")
+              for backbone in ("generic_mil", "feather")),
             *((method, backbone) for method in ("lwsr", "micil")
               for backbone in ("titan", "feather")),
+            *(("owlora", backbone) for backbone in ("titan", "feather")),
             ("qpmil_vl", "titan"),
         ]
         for method, backbone in supported:
@@ -69,9 +74,11 @@ class MethodConfigTests(unittest.TestCase):
         path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         raw = yaml.safe_load(path.read_text())
         cases = {
+            "atlas_mil": "feather",
             "amil": "generic_mil",
             "lwsr": "titan",
             "micil": "feather",
+            "owlora": "titan",
             "qpmil_vl": "titan",
         }
         for method, backbone in cases.items():
@@ -90,9 +97,17 @@ class MethodConfigTests(unittest.TestCase):
     def test_new_methods_reject_unsupported_backbones_and_freezing(self):
         path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         invalid = [
+            ("atlas_mil", "titan", []),
+            ("atlas_mil", "feather", ["--backbone_freeze"]),
+            ("atlas_mil", "feather", ["--backbone_max_patches", "1"]),
+            ("atlas_mil", "feather", ["--feature_dim", "512"]),
+            ("atlas_mil", "feather", ["--buffer_size", "20"]),
+            ("atlas_mil", "feather", ["--atlas_lora_rank", "0"]),
+            ("atlas_mil", "feather", ["--atlas_nce_weight", "-1"]),
             ("amil", "titan", []),
             ("lwsr", "generic_mil", []),
             ("micil", "generic_mil", []),
+            ("owlora", "generic_mil", []),
             ("qpmil_vl", "feather", []),
             ("amil", "generic_mil", ["--backbone_freeze"]),
             ("amil", "generic_mil", ["--backbone_max_patches", "1"]),
@@ -101,6 +116,11 @@ class MethodConfigTests(unittest.TestCase):
             ("micil", "feather", ["--backbone_freeze"]),
             ("lwsr", "titan", ["--feature_dim", "512"]),
             ("micil", "feather", ["--feature_dim", "512"]),
+            ("owlora", "titan", ["--backbone_freeze"]),
+            ("owlora", "feather", ["--feature_dim", "512"]),
+            ("owlora", "titan", ["--owlora_rank", "0"]),
+            ("owlora", "titan", ["--owlora_svd_energy", "1.0"]),
+            ("owlora", "titan", ["--owlora_orthogonal_weight", "-1"]),
             ("qpmil_vl", "titan", ["--feature_dim", "512"]),
         ]
         for method, backbone, extra in invalid:

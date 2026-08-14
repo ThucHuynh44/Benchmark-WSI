@@ -38,9 +38,10 @@ checkpoints below `checkpoints/<exp_desc>/fold_<fold>/`.
 
 ## Method YAML configs
 
-Configs for AMIL, A-GEM, DER++, ER-ACE, online EWC, GDumb, Joint, LwF, SGD,
-LWSR, MICIL, and QPMIL-VL are combined in `configs/methods.yaml`. Select one with
-`--model`:
+Configs for ATLAS-MIL, AMIL, A-GEM, DER++, ER-ACE, online EWC, GDumb, Joint,
+LwF, SGD, LWSR, MICIL, OWLoRA, and QPMIL-VL are combined in
+`configs/methods.yaml`. Select
+one with `--model`:
 
 ```
 python utils/main.py --config configs/methods.yaml --model agem
@@ -93,7 +94,30 @@ The AMIL values `pmp_k=400`, `alpha=1`, `beta=1`, and
 and supplementary material do not publish concrete values for the first three
 or a separate KD temperature. They must not be described as paper defaults.
 
-### LWSR, MICIL, and QPMIL-VL
+### ATLAS-MIL
+
+ATLAS-MIL combines a prompt-anchored class atlas, multi-positive continual
+InfoNCE, prompt-conditioned masked latent reconstruction, MaxMinRand replay,
+attention distillation, and fixed-rank semantic soft-orthogonal LoRA merging.
+Its slide classifier blends projected TITAN text anchors with empirical FEATHER
+centroids and does not require a task ID at inference.
+
+Run the primary configuration explicitly because the common YAML backbone is
+TITAN, which does not expose genuine patch attention:
+
+```
+python utils/main.py --config configs/methods.yaml \
+  --model atlas_mil --backbone feather
+```
+
+`generic_mil` is also supported for synthetic tests. Both modes require 768-D
+features, a full input bag, and a memory capacity at least as large as the
+global class count. The TITAN text model ID/revision is configured separately
+through `atlas_text_model_id` and `atlas_text_revision`; it is loaded only to
+create fixed class anchors. All ATLAS hyperparameters in the shared YAML are
+benchmark-defined starting points rather than published paper defaults.
+
+### LWSR, MICIL, OWLoRA, and QPMIL-VL
 
 The new methods are run through the same ten-task/27-class CLI and evaluator:
 
@@ -111,6 +135,12 @@ python utils/main.py --config configs/methods.yaml \
   --model micil --backbone feather --micil_replay
 
 python utils/main.py --config configs/methods.yaml \
+  --model owlora --backbone titan
+
+python utils/main.py --config configs/methods.yaml \
+  --model owlora --backbone feather
+
+python utils/main.py --config configs/methods.yaml \
   --model qpmil_vl --backbone titan
 ```
 
@@ -118,14 +148,17 @@ Supported combinations are deliberately narrow:
 
 | Method | TITAN | FEATHER | `generic_mil` | Frozen backbone |
 | --- | --- | --- | --- | --- |
+| ATLAS-MIL | no | yes | tests | base frozen; LoRA/projector/decoder train |
 | LWSR | yes | yes | no | no |
 | MICIL | yes | yes | no | no |
+| OWLoRA | yes | yes | no | no |
 | QPMIL-VL | yes | no | no | TITAN text tower is always frozen |
 
-Unsupported combinations fail before loading a pretrained model. All three
-methods require 768-D patch features. LWSR and MICIL fine-tune their slide
-backbone, while QPMIL-VL loads only the pinned TITAN text tower and does not use
-the TITAN slide aggregator.
+Unsupported combinations fail before loading a pretrained model. All five
+method families require 768-D patch features. LWSR, MICIL, and OWLoRA require a
+trainable slide backbone, while QPMIL-VL loads only the pinned TITAN text tower
+and does not use the TITAN slide aggregator. ATLAS-MIL owns its freezing and
+adaptation policy internally.
 
 The LWSR defaults are `buffer_size=10`, `minibatch_size=4`,
 `bags_per_update=4`, `buffer_max_patches=400`, `pair_loss_weight=1.0`,
@@ -142,6 +175,15 @@ explicitly. Classifier normalization can likewise be selected with
 `--micil_weight_norm` or `--no-micil_weight_norm`. For these paired selectors,
 a later explicit CLI value wins over its YAML inverse.
 
+OWLoRA adapts eligible encoder `nn.Linear` layers while leaving the global
+27-class classifier unwrapped. Task 0 fine-tunes the base model with no LoRA
+parameters. After its best checkpoint is restored, OWLoRA truncates each base
+weight at 99% singular-value energy, creates the frozen reference, and adds the
+first rank-8 task adapter. Later tasks train only the newest adapter and current
+classifier rows. Classification uses all seen logits and global labels;
+adapters are expanded dynamically and reconstructed from checkpoint tensor
+shapes before strict loading. The integration does not include CDATMIL or PPL.
+
 QPMIL-VL defaults to `pool_size=20`, `prompt_length=24`, `match_size=5`,
 `bags_per_update=16`, `backbone_max_patches=400`, max pooling,
 `csm_logit_scale=100`, `classification_logit_scale=1`, `alpha=0.5`, and matching
@@ -156,11 +198,10 @@ YAML no-replay default.
 The copied upstream sources are immutable provenance snapshots under
 `third_party/upstream/`; active runtime code does not import them. See
 `INTEGRATION_CHANGES.md` and each `SOURCE_MANIFEST.json` for source revisions,
-checksums, and adaptation details. LWSR retains its MIT license. MICIL and
-QPMIL-VL are internal-research-only integrations. In particular, the adapted
-QPMIL-VL code must not be pushed to a public repository or distributed without
-a separate rights review and any permission required by its CC BY-NC-ND 4.0
-license.
+checksums, and adaptation details. LWSR retains its MIT license. CoMEL-OWLoRA,
+MICIL, and QPMIL-VL are internal-research-only integrations. In particular,
+these sources and adaptations must not be redistributed without a separate
+rights review and any required permission.
 
 The strict preflight checks annotation coverage, disjoint train/val/test IDs,
 class coverage, feature presence, and the exact HDF5 shapes. It never filters

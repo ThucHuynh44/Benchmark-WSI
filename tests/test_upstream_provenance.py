@@ -9,6 +9,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM_ROOT = PROJECT_ROOT / "third_party" / "upstream"
 GENERATED_FILES = {"SOURCE_MANIFEST.json", "INTERNAL_RESEARCH_ONLY.md"}
 EXPECTED_SOURCES = {
+    "comel_owlora": {
+        "project": "CoMEL-OWLoRA",
+        "repository": "https://github.com/Hyun1A/CoMEL.git",
+        "commit": "9fd667994eb57e3960e36970a9509a8217d84a22",
+        "core_entrypoint": "continual/main/continual_bag/cdatmil_ppl_owlora_trainer.py",
+    },
     "lwsr": {
         "project": "LWSR",
         "repository": "https://github.com/OliverZXY/LWSR.git",
@@ -75,7 +81,7 @@ class UpstreamProvenanceTests(unittest.TestCase):
                     self.assertEqual(_sha256(frozen_file), entry["sha256"])
 
     def test_restricted_snapshots_are_marked_internal_research_only(self):
-        for directory in ("micil", "qpmil_vl"):
+        for directory in ("comel_owlora", "micil", "qpmil_vl"):
             with self.subTest(project=directory):
                 marker = UPSTREAM_ROOT / directory / "INTERNAL_RESEARCH_ONLY.md"
                 self.assertIn("INTERNAL_RESEARCH_ONLY", marker.read_text(encoding="utf-8"))

@@ -37,7 +37,8 @@ class FakeFeather(torch.nn.Module):
     def forward(self, features, return_attention=True, return_slide_feats=True):
         slide = self.model.encoder(features.mean(dim=1))
         logits = self.model.classifier(slide)
-        attention = torch.softmax(features[..., 0], dim=1).unsqueeze(1)
+        # Native FEATHER logs signed, pre-softmax attention scores [B,1,N].
+        attention = features[..., 0].unsqueeze(1)
         return {"results": {"logits": logits}, "log": {
             "attention": attention,
             "slide_feats": slide,
@@ -83,6 +84,9 @@ class NativeAdapterTests(unittest.TestCase):
         self.assertEqual(output[1].shape, (1, 27))
         self.assertEqual(output[2].shape, (1,))
         self.assertEqual(output[3].shape, (1, 19))
+        self.assertTrue(torch.isfinite(output[3]).all())
+        self.assertTrue(torch.all(output[3] >= 0))
+        self.assertTrue(torch.allclose(output[3].sum(dim=1), torch.ones(1)))
         output[0].sum().backward()
         self.assertTrue(any(parameter.grad is not None for parameter in model.parameters()))
         if not real_attention:
@@ -98,6 +102,9 @@ class NativeAdapterTests(unittest.TestCase):
     def test_feather_contract_freeze_and_backward(self):
         model = FeatherMILBackbone(FakeFeather())
         self._assert_contract_and_backward(model, real_attention=True)
+        output = model([self.features, self.coords, self.patch_size])
+        expected = torch.softmax(self.features[:, 0], dim=0).unsqueeze(0)
+        self.assertTrue(torch.allclose(output[3], expected))
         frozen = FeatherMILBackbone(FakeFeather(), freeze=True)
         self.assertFalse(any(parameter.requires_grad for parameter in frozen.model.model.encoder.parameters()))
         self.assertTrue(all(parameter.requires_grad for parameter in frozen.model.model.classifier.parameters()))
@@ -118,6 +125,15 @@ class NativeAdapterTests(unittest.TestCase):
         self.assertTrue(GenericMILBackbone.has_genuine_patch_attention)
         self.assertTrue(FeatherMILBackbone.has_genuine_patch_attention)
         self.assertFalse(TitanMILBackbone.has_genuine_patch_attention)
+
+    def test_generic_mil_exposes_embedding_and_classifier_contract(self):
+        model = GenericMILBackbone(768, 27, hidden_dim=16)
+        enriched = model.forward_with_embedding(
+            self.features, self.coords, self.patch_size
+        )
+        self.assertEqual(enriched["embedding"].shape, (1, 16))
+        self.assertEqual(enriched["attention"].shape, (1, 19))
+        self.assertIs(model.get_classifier(), model.classifier)
 
     def test_feather_does_not_fallback_to_uniform_attention(self):
         model = FeatherMILBackbone(FakeFeatherWithoutAttention())
