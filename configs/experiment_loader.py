@@ -94,7 +94,10 @@ def load_experiment_config(
 def config_to_argv(config: Dict[str, Any]) -> List[str]:
     """Convert YAML defaults to CLI tokens; later real CLI tokens override them."""
     arguments: List[str] = []
-    boolean_optional = {"early_stopping", "early_stopping_verbose"}
+    boolean_optional = {
+        "early_stopping", "early_stopping_verbose",
+        "atlas_replay", "atlas_diagnostics",
+    }
     for key, value in config.items():
         if value is None:
             continue

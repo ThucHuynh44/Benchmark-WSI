@@ -117,6 +117,44 @@ through `atlas_text_model_id` and `atlas_text_revision`; it is loaded only to
 create fixed class anchors. All ATLAS hyperparameters in the shared YAML are
 benchmark-defined starting points rather than published paper defaults.
 
+#### ATLAS-MIL ablations
+
+The declarative ablation matrix is stored in
+`configs/atlas_mil_ablations.yaml`. It resolves to 33 unique variants and 330
+fold-runs; listing or dry-running the matrix does not start training:
+
+```
+python scripts/run_atlas_ablations.py list
+python scripts/run_atlas_ablations.py dry-run \
+  --variants atlas_ce_noreplay wo_replay full --folds 0
+```
+
+Run selected variants in the project's PyTorch environment. Every process owns
+one result/checkpoint directory, so completed folds can be resumed safely. A
+partial fold is rerun only when explicitly requested:
+
+```
+python scripts/run_atlas_ablations.py run \
+  --variants full wo_nce wo_reconstruction --folds all --gpus 0,1
+
+python scripts/run_atlas_ablations.py resume \
+  --variants full wo_nce wo_reconstruction --folds all --gpus 0,1 \
+  --rerun-incomplete
+```
+
+Results are isolated below
+`results/ablations/atlas_mil/<variant>/fold_<fold>/`. Build the benchmark,
+paired-delta, resource, and latent-mechanism tables with:
+
+```
+python scripts/summarize_atlas_ablations.py
+python scripts/summarize_atlas_ablations.py --strict
+```
+
+`sgd_ft` is an external reference, not an additive ATLAS stage. The
+`centroid_with_prompt_fallback` variant uses centroids only for finalized
+classes and deliberately falls back to their prompt anchors otherwise.
+
 ### LWSR, MICIL, OWLoRA, and QPMIL-VL
 
 The new methods are run through the same ten-task/27-class CLI and evaluator:

@@ -1,0 +1,234 @@
+defaults:
+  config: configs/methods.yaml
+  backbone: feather
+  folds: all
+  result_root: ablations/atlas_mil
+  expected_variants: 31
+  atlas_overrides:
+    atlas_replay: true
+    atlas_diagnostics: true
+    atlas_nce_weight: 1.0
+    reconstruction_weight: 1.0
+    manifold_weight: 1.0
+    attention_weight: 1.0
+    atlas_lora_mode: semantic
+    atlas_rank: 8
+    atlas_lora_rank: 8
+    pmp_k: 400
+    buffer_size: 30
+    atlas_prompt_weight: 0.5
+    atlas_nce_temperature: 0.07
+
+variants:
+  sgd_ft:
+    id: sgd_ft
+    group: external_reference
+    model: sgd
+    label: FEATHER full fine-tuning
+    factor: reference
+    value: sgd_ft
+    overrides: {}
+  atlas_ce_noreplay:
+    id: atlas_ce_noreplay
+    group: external_reference
+    model: atlas_mil
+    label: ATLAS CE without replay
+    factor: reference
+    value: atlas_ce_noreplay
+    overrides:
+      atlas_replay: false
+      atlas_nce_weight: 0.0
+      reconstruction_weight: 0.0
+      manifold_weight: 0.0
+      attention_weight: 0.0
+      atlas_lora_mode: none
+  atlas_ce:
+    id: atlas_ce
+    group: additive
+    model: atlas_mil
+    label: ATLAS replay CE
+    factor: additive_stage
+    value: ce
+    overrides:
+      atlas_nce_weight: 0.0
+      reconstruction_weight: 0.0
+      manifold_weight: 0.0
+      attention_weight: 0.0
+      atlas_lora_mode: none
+  add_attention:
+    id: add_attention
+    group: additive
+    model: atlas_mil
+    label: + Attention KD
+    factor: additive_stage
+    value: attention
+    overrides:
+      atlas_nce_weight: 0.0
+      reconstruction_weight: 0.0
+      manifold_weight: 0.0
+      attention_weight: 1.0
+      atlas_lora_mode: none
+  add_nce:
+    id: add_nce
+    group: additive
+    model: atlas_mil
+    label: + Atlas-NCE
+    factor: additive_stage
+    value: nce
+    overrides:
+      reconstruction_weight: 0.0
+      manifold_weight: 0.0
+      atlas_lora_mode: none
+  add_reconstruction:
+    id: add_reconstruction
+    group: additive
+    model: atlas_mil
+    label: + Masked reconstruction
+    factor: additive_stage
+    value: reconstruction
+    overrides:
+      manifold_weight: 0.0
+      atlas_lora_mode: none
+  solm_none:
+    id: solm_none
+    group: additive
+    model: atlas_mil
+    label: + Manifold, no SOLM projection
+    factor: atlas_lora_mode
+    value: none
+    overrides:
+      atlas_lora_mode: none
+  solm_hard:
+    id: solm_hard
+    group: additive
+    model: atlas_mil
+    label: Hard orthogonal LoRA merge
+    factor: atlas_lora_mode
+    value: hard
+    overrides:
+      atlas_lora_mode: hard
+  full:
+    id: full
+    group: additive
+    model: atlas_mil
+    label: Full ATLAS-MIL
+    factor: atlas_lora_mode
+    value: semantic
+    overrides: {}
+  wo_replay:
+    id: wo_replay
+    group: leave_one_out
+    model: atlas_mil
+    label: Without replay system
+    factor: replay
+    value: false
+    overrides:
+      atlas_replay: false
+      manifold_weight: 0.0
+      attention_weight: 0.0
+  wo_nce:
+    id: wo_nce
+    group: leave_one_out
+    model: atlas_mil
+    label: Without Atlas-NCE
+    factor: atlas_nce_weight
+    value: 0.0
+    overrides:
+      atlas_nce_weight: 0.0
+  wo_reconstruction:
+    id: wo_reconstruction
+    group: leave_one_out
+    model: atlas_mil
+    label: Without reconstruction MSE
+    factor: reconstruction_weight
+    value: 0.0
+    overrides:
+      reconstruction_weight: 0.0
+  wo_manifold:
+    id: wo_manifold
+    group: leave_one_out
+    model: atlas_mil
+    label: Without manifold loss
+    factor: manifold_weight
+    value: 0.0
+    overrides:
+      manifold_weight: 0.0
+  wo_attention:
+    id: wo_attention
+    group: leave_one_out
+    model: atlas_mil
+    label: Without Attention KD
+    factor: attention_weight
+    value: 0.0
+    overrides:
+      attention_weight: 0.0
+  prompt_only:
+    id: prompt_only
+    group: leave_one_out
+    model: atlas_mil
+    label: Prompt-only classifier
+    factor: atlas_prompt_weight
+    value: 1.0
+    overrides:
+      atlas_prompt_weight: 1.0
+  centroid_with_prompt_fallback:
+    id: centroid_with_prompt_fallback
+    group: leave_one_out
+    model: atlas_mil
+    label: Centroid with prompt fallback
+    factor: atlas_prompt_weight
+    value: 0.0
+    overrides:
+      atlas_prompt_weight: 0.0
+
+axes:
+  atlas_rank:
+    group: sweep_atlas_rank
+    option: atlas_rank
+    id_template: atlas_rank_{value}
+    label_template: Atlas rank {value}
+    values: [4, 8, 16, 32]
+    reuse:
+      "8": full
+  atlas_lora_rank:
+    group: sweep_lora_rank
+    option: atlas_lora_rank
+    id_template: lora_rank_{value}
+    label_template: LoRA rank {value}
+    values: [4, 8, 16, 32]
+    reuse:
+      "8": full
+  pmp_k:
+    group: sweep_pmp_k
+    option: pmp_k
+    id_template: pmp_k_{value}
+    label_template: PMP K {value}
+    values: [64, 128, 256, 400]
+    reuse:
+      "400": full
+  buffer_size:
+    group: sweep_buffer_size
+    option: buffer_size
+    id_template: buffer_{value}
+    label_template: Buffer size {value}
+    values: [30, 54]
+    reuse:
+      "30": full
+  atlas_prompt_weight:
+    group: sweep_prompt_weight
+    option: atlas_prompt_weight
+    id_template: prompt_weight_{value}
+    label_template: Prompt weight {value}
+    values: [0.0, 0.25, 0.5, 0.75, 1.0]
+    reuse:
+      "0.0": centroid_with_prompt_fallback
+      "0.5": full
+      "1.0": prompt_only
+  atlas_nce_temperature:
+    group: sweep_nce_temperature
+    option: atlas_nce_temperature
+    id_template: nce_temperature_{value}
+    label_template: NCE temperature {value}
+    values: [0.03, 0.07, 0.1, 0.2]
+    reuse:
+      "0.07": full

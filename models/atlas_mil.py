@@ -8,8 +8,11 @@ variable-length bag contracts.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 import os
-from argparse import ArgumentParser, Namespace
+from argparse import ArgumentParser, BooleanOptionalAction, Namespace
 from collections import defaultdict
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
@@ -35,7 +38,7 @@ from utils.args import add_experiment_args, add_management_args
 from utils.optim import build_optimizer
 
 
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 
 
 def get_parser() -> ArgumentParser:
@@ -63,6 +66,18 @@ def get_parser() -> ArgumentParser:
     parser.add_argument("--atlas_lora_merge_scale", type=float, default=1.0)
     parser.add_argument("--atlas_text_model_id", type=str, default=TITAN_MODEL_ID)
     parser.add_argument("--atlas_text_revision", type=str, default=TITAN_REVISION)
+    parser.add_argument(
+        "--atlas_replay",
+        action=BooleanOptionalAction,
+        default=True,
+        help="Enable ATLAS pseudo-bag replay and cached teacher targets.",
+    )
+    parser.add_argument(
+        "--atlas_diagnostics",
+        action=BooleanOptionalAction,
+        default=False,
+        help="Record task-boundary latent geometry and drift diagnostics.",
+    )
     return parser
 
 
@@ -79,8 +94,8 @@ def validate_args(args) -> None:
     if int(getattr(args, "backbone_max_patches", 0) or 0) != 0:
         raise ValueError("ATLAS-MIL requires backbone_max_patches=0 for full-bag attention")
 
+    replay_enabled = bool(getattr(args, "atlas_replay", True))
     for name, default in {
-        "buffer_size": 30,
         "minibatch_size": 1,
         "bags_per_update": 1,
         "pmp_k": 400,
@@ -89,8 +104,13 @@ def validate_args(args) -> None:
     }.items():
         if int(getattr(args, name, default)) <= 0:
             raise ValueError(f"ATLAS-MIL {name} must be positive")
+    buffer_size = int(getattr(args, "buffer_size", 30))
+    if replay_enabled and buffer_size <= 0:
+        raise ValueError("ATLAS-MIL buffer_size must be positive when replay is enabled")
+    if not replay_enabled and buffer_size < 0:
+        raise ValueError("ATLAS-MIL buffer_size cannot be negative")
     required_capacity = int(getattr(args, "num_classes", 27))
-    if int(getattr(args, "buffer_size", 30)) < required_capacity:
+    if replay_enabled and buffer_size < required_capacity:
         raise ValueError(
             "ATLAS-MIL buffer_size must cover every global class "
             f"(at least {required_capacity})"
@@ -103,6 +123,17 @@ def validate_args(args) -> None:
     }.items():
         if float(getattr(args, name, default)) < 0.0:
             raise ValueError(f"ATLAS-MIL {name} must be non-negative")
+    if not replay_enabled:
+        incompatible = {
+            "attention_weight": float(getattr(args, "attention_weight", 1.0)),
+            "manifold_weight": float(getattr(args, "manifold_weight", 1.0)),
+        }
+        enabled = [name for name, value in incompatible.items() if value != 0.0]
+        if enabled:
+            raise ValueError(
+                "ATLAS-MIL without replay requires zero replay-only weights: "
+                + ", ".join(enabled)
+            )
     for name, default in {
         "atlas_nce_temperature": 0.07,
         "atlas_logit_scale": 10.0,
@@ -364,7 +395,9 @@ class AtlasMil(ContinualModel):
         self.task_order = tuple(str(value) for value in args.task_order)
         self.n_tasks = int(args.n_tasks)
         self._validate_task_layout()
-        if int(args.buffer_size) < self.num_classes:
+        self.replay_enabled = bool(getattr(args, "atlas_replay", True))
+        self.diagnostics_enabled = bool(getattr(args, "atlas_diagnostics", False))
+        if self.replay_enabled and int(args.buffer_size) < self.num_classes:
             raise ValueError(
                 "ATLAS-MIL buffer_size must be at least num_classes so every seen "
                 "class retains one pseudo-bag"
@@ -386,13 +419,17 @@ class AtlasMil(ContinualModel):
         self.prompt_hash = prompt_schema_hash(self.task_order, self.task_num_classes)
 
         seed = 0 if getattr(args, "seed", None) is None else int(args.seed)
-        self.memory = AtlasMemoryPool(
-            int(args.buffer_size),
-            pmp_k=self.pmp_k,
-            feature_dim=self.feature_dim,
-            embedding_dim=self.embedding_dim,
-            num_classes=self.num_classes,
-            seed=seed,
+        self.memory = (
+            AtlasMemoryPool(
+                int(args.buffer_size),
+                pmp_k=self.pmp_k,
+                feature_dim=self.feature_dim,
+                embedding_dim=self.embedding_dim,
+                num_classes=self.num_classes,
+                seed=seed,
+            )
+            if self.replay_enabled
+            else None
         )
         self.mask_generator = torch.Generator(device="cpu")
         self.mask_generator.manual_seed(seed + 113)
@@ -401,6 +438,7 @@ class AtlasMil(ContinualModel):
         self.old_class_count = 0
         self.seen_class_count = self.task_num_classes[0]
         self.semantic_rho_history: List[float] = []
+        self.diagnostic_history: List[Dict[str, Any]] = []
         self._buffer_update_started = False
         self._reset_optimizer()
 
@@ -460,12 +498,13 @@ class AtlasMil(ContinualModel):
             raise RuntimeError("ATLAS-MIL cannot begin during memory refresh")
         task = int(getattr(dataset, "current_task", 0)) - 1
         self._configure_task(task)
-        expected_snapshot = task - 1
-        if task == 0:
-            if len(self.memory) != 0:
-                raise RuntimeError("ATLAS-MIL task 0 requires empty memory")
-        elif len(self.memory) == 0 or self.memory.target_snapshot_task != expected_snapshot:
-            raise RuntimeError("ATLAS-MIL memory snapshot is missing or stale")
+        if self.replay_enabled:
+            expected_snapshot = task - 1
+            if task == 0:
+                if len(self.memory) != 0:
+                    raise RuntimeError("ATLAS-MIL task 0 requires empty memory")
+            elif len(self.memory) == 0 or self.memory.target_snapshot_task != expected_snapshot:
+                raise RuntimeError("ATLAS-MIL memory snapshot is missing or stale")
         self._reset_optimizer()
 
     def _unpack(self, batch: Sequence[torch.Tensor]):
@@ -499,7 +538,8 @@ class AtlasMil(ContinualModel):
         positives = [prompts[label : label + 1]]
         if bool(self.net.atlas_valid[label]):
             positives.append(self.net.atlas_centroids[label : label + 1])
-        positives.extend(self.memory.embeddings_for_label(label, self.device))
+        if self.replay_enabled:
+            positives.extend(self.memory.embeddings_for_label(label, self.device))
         negatives: List[torch.Tensor] = []
         for other in range(self.seen_class_count):
             if other == label:
@@ -565,7 +605,7 @@ class AtlasMil(ContinualModel):
         current_outputs = [self._forward_bag(batch) for batch in batches]
         replay_entries = (
             self.memory.sample(self.minibatch_size, self.device)
-            if self.old_class_count > 0
+            if self.replay_enabled and self.old_class_count > 0
             else []
         )
         replay_outputs = [
@@ -588,9 +628,11 @@ class AtlasMil(ContinualModel):
             ce_losses.append(
                 F.cross_entropy(output["logits"][:, : self.seen_class_count], output["label"])
             )
-            nce_losses.append(self._atlas_nce_loss(output["embedding"], label))
-            reconstructed = self._masked_reconstruction(output["embedding"], label)
-            rec_losses.append(F.mse_loss(reconstructed, output["embedding"].detach()))
+            if self.nce_weight > 0.0:
+                nce_losses.append(self._atlas_nce_loss(output["embedding"], label))
+            if self.reconstruction_weight > 0.0:
+                reconstructed = self._masked_reconstruction(output["embedding"], label)
+                rec_losses.append(F.mse_loss(reconstructed, output["embedding"].detach()))
 
         for entry, output in replay_outputs:
             label = int(output["label"].item())
@@ -601,15 +643,22 @@ class AtlasMil(ContinualModel):
             ce_losses.append(
                 F.cross_entropy(output["logits"][:, : self.seen_class_count], output["label"])
             )
-            nce_losses.append(self._atlas_nce_loss(output["embedding"], label))
-            reconstructed = self._masked_reconstruction(output["embedding"], label)
-            rec_losses.append(F.mse_loss(reconstructed, entry.target_embedding.to(reconstructed)))
-            manifold_losses.append(self._manifold_loss(reconstructed, label))
-            attention_losses.append(
-                self.attention_distillation_loss(
-                    output["attention"], entry.target_attention
+            if self.nce_weight > 0.0:
+                nce_losses.append(self._atlas_nce_loss(output["embedding"], label))
+            if self.reconstruction_weight > 0.0 or self.manifold_weight > 0.0:
+                reconstructed = self._masked_reconstruction(output["embedding"], label)
+                if self.reconstruction_weight > 0.0:
+                    rec_losses.append(
+                        F.mse_loss(reconstructed, entry.target_embedding.to(reconstructed))
+                    )
+                if self.manifold_weight > 0.0:
+                    manifold_losses.append(self._manifold_loss(reconstructed, label))
+            if self.attention_weight > 0.0:
+                attention_losses.append(
+                    self.attention_distillation_loss(
+                        output["attention"], entry.target_attention
+                    )
                 )
-            )
 
         zero = current_outputs[0]["embedding"].sum() * 0.0
         loss_ce = torch.stack(ce_losses).mean()
@@ -644,7 +693,7 @@ class AtlasMil(ContinualModel):
             "loss_manifold": float(loss_manifold.detach().cpu()),
             "loss_attention": float(loss_attention.detach().cpu()),
             "replay_bags": float(len(replay_entries)),
-            "buffer_size": float(len(self.memory)),
+            "buffer_size": float(len(self.memory) if self.memory is not None else 0),
         }
 
     def observe(self, features, coords, patch_size, labels, task=None, ssl=False):
@@ -653,6 +702,8 @@ class AtlasMil(ContinualModel):
         )
 
     def _start_memory_update(self) -> None:
+        if not self.replay_enabled:
+            raise RuntimeError("ATLAS memory update is disabled for this ablation")
         if self._buffer_update_started:
             return
         if self.current_task == 0:
@@ -666,6 +717,8 @@ class AtlasMil(ContinualModel):
         self._buffer_update_started = True
 
     def save_buffer(self, features, coords, patch_size, labels, task=None) -> int:
+        if not self.replay_enabled:
+            return -1
         if task is not None and int(task) != self.current_task:
             raise RuntimeError("ATLAS save_buffer task does not match active task")
         features, coords, patch_size, label = self._unpack(
@@ -713,7 +766,7 @@ class AtlasMil(ContinualModel):
             similarities.append(F.cosine_similarity(current, old, dim=0))
         return float(torch.stack(similarities).max().clamp(0.0, 1.0).cpu())
 
-    def _finalize_current_atlas(self, dataset) -> None:
+    def _finalize_current_atlas(self, dataset) -> Dict[int, torch.Tensor]:
         loader = DataLoader(
             dataset.train_loader.dataset,
             batch_size=1,
@@ -735,9 +788,14 @@ class AtlasMil(ContinualModel):
             if not values[label]:
                 raise RuntimeError(f"ATLAS train split contains no class {label}")
             self.net.finalize_class(label, torch.cat(values[label], dim=0))
+        return {label: torch.cat(items, dim=0) for label, items in values.items()}
 
-    def _refresh_memory_targets(self) -> None:
+    def _memory_targets_and_drift(
+        self,
+    ) -> Tuple[List[Tuple[torch.Tensor, torch.Tensor]], float, float, int]:
         targets = []
+        embedding_drifts: List[float] = []
+        attention_drifts: List[float] = []
         with torch.no_grad():
             for entry in self.memory.all(self.device, require_targets=False):
                 output = self.net.forward_with_embedding(
@@ -749,13 +807,130 @@ class AtlasMil(ContinualModel):
                         output["embedding"].detach().cpu().clone(),
                     )
                 )
-        self.memory.refresh_targets(
-            targets, target_snapshot_task=self.current_task
+                if entry.target_embedding is not None:
+                    drift = 1.0 - F.cosine_similarity(
+                        output["embedding"].float(),
+                        entry.target_embedding.to(output["embedding"]).float(),
+                        dim=1,
+                    )
+                    embedding_drifts.append(float(drift.mean().cpu()))
+                    attention_drifts.append(float(self.attention_distillation_loss(
+                        output["attention"], entry.target_attention
+                    ).cpu()))
+        count = len(embedding_drifts)
+        return (
+            targets,
+            float(sum(embedding_drifts) / count) if count else math.nan,
+            float(sum(attention_drifts) / count) if count else math.nan,
+            count,
         )
 
+    @staticmethod
+    def _subspace_overlap(
+        left: torch.Tensor, left_rank: int, right: torch.Tensor, right_rank: int
+    ) -> float:
+        denominator = min(int(left_rank), int(right_rank))
+        if denominator <= 0:
+            return math.nan
+        left_basis = left[:, : int(left_rank)].float()
+        right_basis = right[:, : int(right_rank)].float()
+        value = (left_basis.t() @ right_basis).square().sum() / denominator
+        return float(value.clamp(0.0, 1.0).cpu())
+
+    def _pair_overlap(self, pairs: Sequence[Tuple[int, int]]) -> Tuple[float, int]:
+        values = []
+        for left, right in pairs:
+            left_rank = int(self.net.atlas_effective_ranks[left])
+            right_rank = int(self.net.atlas_effective_ranks[right])
+            value = self._subspace_overlap(
+                self.net.atlas_subspaces[left], left_rank,
+                self.net.atlas_subspaces[right], right_rank,
+            )
+            if math.isfinite(value):
+                values.append(value)
+        return (float(sum(values) / len(values)) if values else math.nan, len(values))
+
+    def _task_diagnostics(
+        self,
+        embeddings: Mapping[int, torch.Tensor],
+        semantic_rho: float,
+        embedding_drift: float,
+        attention_drift: float,
+        drift_count: int,
+    ) -> Dict[str, Any]:
+        start, stop = self._task_bounds(self.current_task)
+        current = list(range(start, stop))
+        old = list(range(start))
+        seen = list(range(stop))
+
+        intra = []
+        for label in current:
+            values = embeddings[label].to(self.net.atlas_centroids)
+            centroid = self.net.atlas_centroids[label : label + 1]
+            distance = 1.0 - F.cosine_similarity(values, centroid, dim=1)
+            intra.append(float(distance.mean().cpu()))
+        centroid_pairs = [
+            (left, right)
+            for index, left in enumerate(seen)
+            for right in seen[index + 1 :]
+            if bool(self.net.atlas_valid[left]) and bool(self.net.atlas_valid[right])
+        ]
+        separations = [
+            float((1.0 - F.cosine_similarity(
+                self.net.atlas_centroids[left : left + 1],
+                self.net.atlas_centroids[right : right + 1], dim=1,
+            )).cpu())
+            for left, right in centroid_pairs
+        ]
+        old_current = [(left, right) for left in old for right in current]
+        within_current = [
+            (left, right)
+            for index, left in enumerate(current)
+            for right in current[index + 1 :]
+        ]
+        all_seen = [
+            (left, right)
+            for index, left in enumerate(seen)
+            for right in seen[index + 1 :]
+        ]
+        old_current_value, old_current_count = self._pair_overlap(old_current)
+        within_value, within_count = self._pair_overlap(within_current)
+        all_seen_value, all_seen_count = self._pair_overlap(all_seen)
+        return {
+            "task": int(self.current_task),
+            "semantic_rho": float(semantic_rho),
+            "intra_class_distance": float(sum(intra) / len(intra)) if intra else math.nan,
+            "intra_class_count": len(intra),
+            "inter_class_separation": (
+                float(sum(separations) / len(separations)) if separations else math.nan
+            ),
+            "inter_class_pair_count": len(separations),
+            "embedding_drift": float(embedding_drift),
+            "attention_drift": float(attention_drift),
+            "drift_bag_count": int(drift_count),
+            "old_current_overlap": old_current_value,
+            "old_current_pair_count": old_current_count,
+            "within_current_overlap": within_value,
+            "within_current_pair_count": within_count,
+            "all_seen_overlap": all_seen_value,
+            "all_seen_pair_count": all_seen_count,
+            "atlas_valid_count": int(self.net.atlas_valid[:stop].sum()),
+            "mean_effective_rank": float(
+                self.net.atlas_effective_ranks[start:stop].float().mean().cpu()
+            ),
+            "memory_count": int(len(self.memory) if self.memory is not None else 0),
+        }
+
+    def get_task_diagnostics(self) -> Dict[str, Any] | None:
+        if not self.diagnostics_enabled or not self.diagnostic_history:
+            return None
+        return dict(self.diagnostic_history[-1])
+
     def end_task(self, dataset=None) -> None:
-        if dataset is None or not self._buffer_update_started:
-            raise RuntimeError("ATLAS end_task requires dataset and completed buffer update")
+        if dataset is None:
+            raise RuntimeError("ATLAS end_task requires dataset")
+        if self.replay_enabled and not self._buffer_update_started:
+            raise RuntimeError("ATLAS end_task requires completed buffer update")
         semantic_rho = self._semantic_rho()
         merge_rho = {
             "semantic": semantic_rho,
@@ -764,22 +939,40 @@ class AtlasMil(ContinualModel):
         }[self.lora_mode]
         was_training = self.net.training
         self.net.eval()
+        diagnostic_row = None
         try:
             merge_atlas_lora(
                 self.lora_modules,
                 rho=merge_rho,
                 scale=self.lora_merge_scale,
             )
-            self._finalize_current_atlas(dataset)
-            self._refresh_memory_targets()
+            embeddings = self._finalize_current_atlas(dataset)
+            if self.replay_enabled:
+                targets, embedding_drift, attention_drift, drift_count = (
+                    self._memory_targets_and_drift()
+                )
+            else:
+                targets = []
+                embedding_drift, attention_drift, drift_count = math.nan, math.nan, 0
+            if self.diagnostics_enabled:
+                diagnostic_row = self._task_diagnostics(
+                    embeddings, semantic_rho, embedding_drift, attention_drift, drift_count
+                )
+            if self.replay_enabled:
+                self.memory.refresh_targets(
+                    targets, target_snapshot_task=self.current_task
+                )
         finally:
             self.net.train(was_training)
         self.semantic_rho_history.append(semantic_rho)
+        if diagnostic_row is not None:
+            self.diagnostic_history.append(diagnostic_row)
         self.completed_tasks = self.current_task + 1
         self._buffer_update_started = False
         print(
             f"[atlas_mil] finalized task {self.current_task}: rho={semantic_rho:.4f}, "
-            f"atlas_classes={int(self.net.atlas_finalized.sum())}, memory={len(self.memory)}"
+            f"atlas_classes={int(self.net.atlas_finalized.sum())}, "
+            f"memory={len(self.memory) if self.memory is not None else 0}"
         )
 
     def _checkpoint_config(self) -> Dict[str, Any]:
@@ -788,7 +981,9 @@ class AtlasMil(ContinualModel):
             "feature_dim": self.feature_dim,
             "embedding_dim": self.embedding_dim,
             "num_classes": self.num_classes,
-            "buffer_size": self.memory.capacity,
+            "buffer_size": int(self.args.buffer_size),
+            "replay_enabled": self.replay_enabled,
+            "diagnostics_enabled": self.diagnostics_enabled,
             "minibatch_size": self.minibatch_size,
             "bags_per_update": self.bags_per_update,
             "pmp_k": self.pmp_k,
@@ -810,12 +1005,28 @@ class AtlasMil(ContinualModel):
             "text_revision": self.text_revision,
             "backbone_model_id": getattr(self.args, "backbone_model_id", None),
             "backbone_revision": getattr(self.args, "backbone_revision", None),
+            "ablation_id": getattr(self.args, "ablation_id", None),
+            "ablation_group": getattr(self.args, "ablation_group", None),
+            "ablation_config_hash": getattr(self.args, "ablation_config_hash", None),
+        }
+
+    def get_run_metadata(self) -> Dict[str, Any]:
+        config = self._checkpoint_config()
+        encoded = json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+        return {
+            "atlas_config": config,
+            "atlas_config_hash": hashlib.sha256(encoded).hexdigest(),
+            "replay_enabled": self.replay_enabled,
+            "diagnostics_enabled": self.diagnostics_enabled,
         }
 
     def get_checkpoint_state(self) -> Dict[str, Any]:
-        if self._buffer_update_started or self.memory.refresh_required:
+        if self._buffer_update_started or (
+            self.memory is not None and self.memory.refresh_required
+        ):
             raise RuntimeError("ATLAS cannot checkpoint an unfinished memory refresh")
-        self.memory.all("cpu", require_targets=True)
+        if self.memory is not None:
+            self.memory.all("cpu", require_targets=True)
         return {
             "version": self.CHECKPOINT_VERSION,
             "method": self.NAME,
@@ -829,8 +1040,9 @@ class AtlasMil(ContinualModel):
             "old_class_count": self.old_class_count,
             "seen_class_count": self.seen_class_count,
             "semantic_rho_history": list(self.semantic_rho_history),
+            "diagnostic_history": [dict(row) for row in self.diagnostic_history],
             "mask_generator_state": self.mask_generator.get_state().clone(),
-            "memory": self.memory.state_dict(),
+            "memory": None if self.memory is None else self.memory.state_dict(),
         }
 
     def load_checkpoint_state(self, state: Dict[str, Any], strict: bool = True) -> None:
@@ -867,10 +1079,18 @@ class AtlasMil(ContinualModel):
         history = [float(value) for value in state.get("semantic_rho_history", [])]
         if len(history) != completed:
             raise ValueError("ATLAS checkpoint semantic history length is invalid")
-        self.memory.load_state_dict(state.get("memory"), strict=strict)
-        expected_snapshot = completed - 1 if completed > 0 else None
-        if len(self.memory) and self.memory.target_snapshot_task != expected_snapshot:
-            raise ValueError("ATLAS checkpoint memory snapshot is incompatible")
+        diagnostics = [dict(row) for row in state.get("diagnostic_history", [])]
+        if len(diagnostics) not in {0, completed}:
+            raise ValueError("ATLAS checkpoint diagnostic history length is invalid")
+        if self.diagnostics_enabled and len(diagnostics) != completed:
+            raise ValueError("ATLAS checkpoint is missing enabled diagnostics")
+        if self.memory is not None:
+            self.memory.load_state_dict(state.get("memory"), strict=strict)
+            expected_snapshot = completed - 1 if completed > 0 else None
+            if len(self.memory) and self.memory.target_snapshot_task != expected_snapshot:
+                raise ValueError("ATLAS checkpoint memory snapshot is incompatible")
+        elif strict and state.get("memory") is not None:
+            raise ValueError("ATLAS no-replay checkpoint unexpectedly contains memory")
         self.mask_generator.set_state(
             torch.as_tensor(state["mask_generator_state"], dtype=torch.uint8).cpu()
         )
@@ -879,6 +1099,7 @@ class AtlasMil(ContinualModel):
         self.old_class_count = old_count
         self.seen_class_count = seen_count
         self.semantic_rho_history = history
+        self.diagnostic_history = diagnostics
         self._buffer_update_started = False
         self._reset_optimizer()
 

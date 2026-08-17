@@ -115,6 +115,9 @@ backbones:
 methods:
   atlas_mil:
     # Full-bag genuine attention; run the primary method with --backbone feather.
+    atlas_replay: true
+    # Ablation registry enables task-boundary geometry/drift artifacts explicitly.
+    atlas_diagnostics: false
     buffer_size: 30
     minibatch_size: 1
     bags_per_update: 1

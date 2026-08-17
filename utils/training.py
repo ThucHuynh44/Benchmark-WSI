@@ -1,6 +1,7 @@
 """Training and evaluation for variable-class continual WSI streams."""
 
 from dataclasses import dataclass
+import json
 import math
 from pathlib import Path
 import time
@@ -21,6 +22,7 @@ from evaluation.artifacts import (
     initialize_artifacts,
     repo_commit,
     slide_metadata,
+    write_csv,
     write_manifest,
     write_confusion_matrix,
 )
@@ -118,6 +120,80 @@ def _loss_value(result) -> float:
     if not np.isfinite(value):
         raise FloatingPointError(f"observe() returned a non-finite loss: {value}")
     return value
+
+
+def _scalar_observe_metrics(result) -> Dict[str, float]:
+    """Extract finite scalar metrics while preserving the legacy loss contract."""
+    loss = _loss_value(result)
+    metrics = {"loss": loss}
+    if not isinstance(result, dict):
+        return metrics
+    for key, raw in result.items():
+        if key == "loss":
+            continue
+        if torch.is_tensor(raw):
+            if raw.numel() != 1:
+                continue
+            raw = raw.detach().item()
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            metrics[str(key)] = value
+    return metrics
+
+
+TRAIN_COMPONENT_FIELDS = [
+    "method", "ablation_id", "fold", "task", "epoch", "updates",
+    "loss", "loss_cls", "loss_atlas_nce", "loss_reconstruction",
+    "loss_manifold", "loss_attention", "replay_bags", "buffer_size",
+]
+
+ATLAS_DIAGNOSTIC_FIELDS = [
+    "method", "ablation_id", "fold", "task", "semantic_rho",
+    "intra_class_distance", "intra_class_count", "inter_class_separation",
+    "inter_class_pair_count", "embedding_drift", "attention_drift",
+    "drift_bag_count", "old_current_overlap", "old_current_pair_count",
+    "within_current_overlap", "within_current_pair_count", "all_seen_overlap",
+    "all_seen_pair_count", "atlas_valid_count", "mean_effective_rank",
+    "memory_count",
+]
+
+
+def _write_training_diagnostics(state) -> None:
+    root = Path(state["artifact_root"])
+    write_csv(
+        str(root / "train_components.csv"),
+        state["component_rows"],
+        TRAIN_COMPONENT_FIELDS,
+    )
+    if state["diagnostic_rows"]:
+        write_csv(
+            str(root / "atlas_task_diagnostics.csv"),
+            state["diagnostic_rows"],
+            ATLAS_DIAGNOSTIC_FIELDS,
+        )
+
+
+def _resolved_manifest_args(args) -> Dict[str, object]:
+    excluded = {
+        "_evaluation_artifact_state", "conf_jobnum", "conf_timestamp", "conf_host",
+        "fold", "folds", "selected_folds", "exp_desc", "preflight_only",
+        "non_verbose", "tensorboard", "csv_log",
+    }
+    output = {}
+    for key, value in vars(args).items():
+        if key in excluded:
+            continue
+        if isinstance(value, tuple):
+            value = list(value)
+        try:
+            json.dumps(value)
+        except TypeError:
+            value = str(value)
+        output[key] = value
+    return output
 
 
 def _iter_logical_batches(loader, group_size: int):
@@ -440,10 +516,16 @@ def evaluate(
 
 def checkpoint_payload(model, dataset, fold: int):
     """Build a versioned checkpoint including non-module continual state."""
+    model_args = getattr(model, "args", None)
     payload = {
         "format_version": 2,
         "model_name": getattr(model, "NAME", None),
         "metadata": dataset.metadata(fold),
+        "ablation": {
+            "id": getattr(model_args, "ablation_id", None),
+            "group": getattr(model_args, "ablation_group", None),
+            "config_hash": getattr(model_args, "ablation_config_hash", None),
+        },
     }
     if bool(getattr(model, "CHECKPOINT_USES_STATE_DICT", True)):
         payload["state_dict"] = model.state_dict()
@@ -470,6 +552,18 @@ def load_checkpoint(model, path, dataset, fold: int):
         raise ValueError(
             f"Checkpoint method mismatch: saved={saved_model!r}, "
             f"expected={getattr(model, 'NAME', None)!r}"
+        )
+    model_args = getattr(model, "args", None)
+    expected_ablation = {
+        "id": getattr(model_args, "ablation_id", None),
+        "group": getattr(model_args, "ablation_group", None),
+        "config_hash": getattr(model_args, "ablation_config_hash", None),
+    }
+    saved_ablation = payload.get("ablation", {"id": None, "group": None, "config_hash": None})
+    if saved_ablation != expected_ablation:
+        raise ValueError(
+            f"Checkpoint ablation mismatch: saved={saved_ablation!r}, "
+            f"expected={expected_ablation!r}"
         )
     expected = dataset.metadata(fold)
     actual = payload["metadata"]
@@ -734,6 +828,9 @@ def _initialize_evaluation_run(args, dataset, model, fold):
         "task_il": initialize_artifacts(str(root / "task_il"), total_classes),
         "training_times": {},
         "resource_usage": {},
+        "artifact_root": str(root),
+        "component_rows": [],
+        "diagnostic_rows": [],
     }
     selected_folds = list(getattr(args, "selected_folds", [fold]))
     common_manifest = {
@@ -752,6 +849,9 @@ def _initialize_evaluation_run(args, dataset, model, fold):
             getattr(args, "patch_size_level0_fallback", 1024)
         ),
         "seed": getattr(args, "seed", None),
+        "ablation_id": getattr(args, "ablation_id", None),
+        "ablation_group": getattr(args, "ablation_group", None),
+        "ablation_config_hash": getattr(args, "ablation_config_hash", None),
         **parameter_statistics(model.net),
         "early_stopping": bool(getattr(args, "early_stopping", True)),
         "early_stopping_patience": int(
@@ -768,7 +868,14 @@ def _initialize_evaluation_run(args, dataset, model, fold):
         ),
         "evaluate_fwt": bool(getattr(args, "evaluate_fwt", False)),
         "repo_commit": repo_commit(Path(__file__).resolve().parents[1]),
+        "resolved_config": _resolved_manifest_args(args),
     }
+    metadata_hook = getattr(model, "get_run_metadata", None)
+    if callable(metadata_hook):
+        method_metadata = metadata_hook()
+        if not isinstance(method_metadata, dict):
+            raise TypeError("get_run_metadata() must return a dictionary")
+        common_manifest.update(method_metadata)
     state["manifest_common"] = common_manifest
     _write_resource_manifests(state)
     args._evaluation_artifact_state = state
@@ -901,6 +1008,7 @@ def train(model: ContinualModel, dataset: ContinualDataset, args: Namespace, fol
                 logical_total = max(1, math.ceil(len(train_loader) / bags_per_update))
                 epoch_loss = 0.0
                 epoch_updates = 0
+                epoch_metric_sums: Dict[str, float] = {}
                 batch_bar = tqdm(
                     _iter_logical_batches(train_loader, bags_per_update),
                     total=logical_total,
@@ -909,15 +1017,36 @@ def train(model: ContinualModel, dataset: ContinualDataset, args: Namespace, fol
                     disable=bool(getattr(args, "non_verbose", False)),
                 )
                 for batch_index, raw_group in enumerate(batch_bar):
-                    loss = _loss_value(
-                        _observe_logical_batch(model, raw_group, task_id, ssl=False)
+                    observe_result = _observe_logical_batch(
+                        model, raw_group, task_id, ssl=False
                     )
+                    metrics = _scalar_observe_metrics(observe_result)
+                    loss = metrics["loss"]
+                    for key, value in metrics.items():
+                        epoch_metric_sums[key] = epoch_metric_sums.get(key, 0.0) + value
                     epoch_loss += loss
                     epoch_updates += 1
                     batch_bar.set_postfix(loss=f"{loss:.4f}", refresh=False)
                     if tb_logger:
                         tb_logger.log_loss(loss, args, epoch, task_id, batch_index)
                 average_loss = epoch_loss / max(epoch_updates, 1)
+                component_row = {
+                    "method": model.NAME,
+                    "ablation_id": getattr(args, "ablation_id", None) or "",
+                    "fold": int(fold),
+                    "task": int(task_id),
+                    "epoch": int(epoch),
+                    "updates": int(epoch_updates),
+                }
+                for field in TRAIN_COMPONENT_FIELDS:
+                    if field in component_row:
+                        continue
+                    component_row[field] = (
+                        epoch_metric_sums[field] / max(epoch_updates, 1)
+                        if field in epoch_metric_sums else ""
+                    )
+                artifact_state["component_rows"].append(component_row)
+                _write_training_diagnostics(artifact_state)
                 epoch_bar.set_postfix(loss=f"{average_loss:.4f}", refresh=False)
                 if not bool(getattr(args, "non_verbose", False)):
                     tqdm.write(
@@ -949,6 +1078,20 @@ def train(model: ContinualModel, dataset: ContinualDataset, args: Namespace, fol
                     )
             if hasattr(model, "end_task"):
                 model.end_task(dataset)
+            diagnostic_hook = getattr(model, "get_task_diagnostics", None)
+            if callable(diagnostic_hook):
+                diagnostics = diagnostic_hook()
+                if diagnostics is not None:
+                    row = {
+                        "method": model.NAME,
+                        "ablation_id": getattr(args, "ablation_id", None) or "",
+                        "fold": int(fold),
+                        **diagnostics,
+                    }
+                    artifact_state["diagnostic_rows"].append({
+                        field: row.get(field, "") for field in ATLAS_DIAGNOSTIC_FIELDS
+                    })
+                    _write_training_diagnostics(artifact_state)
 
             # The early-stopping file is deliberately temporary: canonical
             # task checkpoints are written only after replay/teacher/key state

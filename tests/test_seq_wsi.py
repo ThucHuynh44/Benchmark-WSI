@@ -1,3 +1,4 @@
+import csv
 import tempfile
 import unittest
 import os
@@ -222,6 +223,12 @@ class LoaderSchemaTests(unittest.TestCase):
             os.chdir(previous)
         checkpoint = self.root / "checkpoints/smoke/fold_0/task1_checkpoint.pt"
         self.assertTrue(checkpoint.is_file())
+        components = self.root / "results/smoke/evaluation/train_components.csv"
+        self.assertTrue(components.is_file())
+        with components.open(newline="", encoding="utf-8") as handle:
+            component_rows = list(csv.DictReader(handle))
+        self.assertEqual(len(component_rows), 2)
+        self.assertTrue(all(row["loss"] for row in component_rows))
         for mode in ("class_il", "task_il"):
             artifact_dir = self.root / "results/smoke/evaluation" / mode
             self.assertTrue((artifact_dir / "run_manifest.json").is_file())

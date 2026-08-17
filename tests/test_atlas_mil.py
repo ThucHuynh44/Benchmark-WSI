@@ -1,4 +1,5 @@
 import copy
+import math
 import unittest
 from collections import namedtuple
 from types import SimpleNamespace
@@ -95,6 +96,11 @@ def atlas_args(**overrides):
         atlas_lora_merge_scale=1.0,
         atlas_text_model_id="fake-titan",
         atlas_text_revision="fixed-revision",
+        atlas_replay=True,
+        atlas_diagnostics=False,
+        ablation_id=None,
+        ablation_group=None,
+        ablation_config_hash=None,
         backbone_model_id=None,
         backbone_revision=None,
     )
@@ -242,6 +248,10 @@ class AtlasMethodTests(unittest.TestCase):
         ):
             with self.subTest(override=override), self.assertRaises(ValueError):
                 validate_args(atlas_args(**override))
+        with self.assertRaises(ValueError):
+            validate_args(atlas_args(
+                atlas_replay=False, attention_weight=1.0, manifold_weight=0.0
+            ))
 
     def test_hybrid_classifier_fallback_and_single_sample_pca(self):
         model = build()
@@ -303,6 +313,81 @@ class AtlasMethodTests(unittest.TestCase):
         result = model.observe(*task1_bags[0], task=1)
         self.assertEqual(result["replay_bags"], 1.0)
         self.assertGreaterEqual(result["loss_attention"], 0.0)
+
+    def test_zero_weight_branches_are_not_called_or_advance_mask_rng(self):
+        model = build(atlas_args(
+            atlas_nce_weight=0.0,
+            reconstruction_weight=0.0,
+            manifold_weight=0.0,
+            attention_weight=0.0,
+        ))
+        dataset = TaskDataset(0, [make_bag(0, 0.2), make_bag(1, 0.5)])
+        model.begin_task(dataset)
+        before = model.mask_generator.get_state().clone()
+        with patch.object(model, "_atlas_nce_loss", side_effect=AssertionError), patch.object(
+            model, "_masked_reconstruction", side_effect=AssertionError
+        ):
+            result = model.observe(*make_bag(0, 0.2), task=0)
+        self.assertEqual(result["loss_atlas_nce"], 0.0)
+        self.assertEqual(result["loss_reconstruction"], 0.0)
+        self.assertTrue(torch.equal(before, model.mask_generator.get_state()))
+
+    def test_no_replay_two_task_diagnostics_and_checkpoint(self):
+        args = atlas_args(
+            atlas_replay=False,
+            atlas_diagnostics=True,
+            attention_weight=0.0,
+            manifold_weight=0.0,
+            ablation_id="wo_replay",
+            ablation_group="leave_one_out",
+            ablation_config_hash="fixed-hash",
+        )
+        model = build(args)
+        parameter_count = sum(parameter.numel() for parameter in model.parameters())
+        task0 = TaskDataset(0, [make_bag(0, 0.2), make_bag(1, 0.5)])
+        model.begin_task(task0)
+        model.observe(*make_bag(0, 0.2), task=0)
+        model.end_task(task0)
+        self.assertIsNone(model.memory)
+        self.assertEqual(model.completed_tasks, 1)
+        self.assertEqual(len(model.diagnostic_history), 1)
+        self.assertTrue(math.isnan(model.diagnostic_history[0]["old_current_overlap"]))
+        self.assertEqual(model.diagnostic_history[0]["old_current_pair_count"], 0)
+
+        state_dict = copy.deepcopy(model.state_dict())
+        method_state = copy.deepcopy(model.get_checkpoint_state())
+        restored = build(args)
+        restored.load_state_dict(state_dict)
+        restored.load_checkpoint_state(method_state)
+        self.assertEqual(restored.diagnostic_history, model.diagnostic_history)
+
+        task1 = TaskDataset(1, [make_bag(2, 0.8), make_bag(3, 1.1)])
+        model.begin_task(task1)
+        result = model.observe(*make_bag(2, 0.8), task=1)
+        self.assertEqual(result["replay_bags"], 0.0)
+        model.end_task(task1)
+        self.assertEqual(model.completed_tasks, 2)
+        self.assertEqual(len(model.diagnostic_history), 2)
+        self.assertEqual(
+            parameter_count, sum(parameter.numel() for parameter in model.parameters())
+        )
+
+    def test_subspace_overlap_and_pair_aggregation(self):
+        model = build()
+        identity = torch.eye(4)
+        self.assertAlmostEqual(model._subspace_overlap(identity, 2, identity, 2), 1.0)
+        left = identity[:, :1]
+        right = identity[:, 1:2]
+        self.assertAlmostEqual(model._subspace_overlap(left, 1, right, 1), 0.0)
+        self.assertTrue(math.isnan(model._subspace_overlap(left, 0, right, 1)))
+        with torch.no_grad():
+            model.net.atlas_subspaces[0, :, :2] = identity[:, :2]
+            model.net.atlas_subspaces[1, :, :2] = identity[:, :2]
+            model.net.atlas_subspaces[2, :, :2] = identity[:, 2:]
+            model.net.atlas_effective_ranks[:3] = torch.tensor([2, 2, 2])
+        value, count = model._pair_overlap([(0, 1), (0, 2)])
+        self.assertEqual(count, 2)
+        self.assertAlmostEqual(value, 0.5)
 
 
 if __name__ == "__main__":

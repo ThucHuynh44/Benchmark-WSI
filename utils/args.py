@@ -106,6 +106,12 @@ def add_management_args(parser: ArgumentParser) -> None:
                         help='The random seed.')
     parser.add_argument('--notes', type=str, default=None,
                         help='Notes for this run.')
+    parser.add_argument('--ablation_id', type=str, default=None,
+                        help='Stable ablation variant identifier written to manifests.')
+    parser.add_argument('--ablation_group', type=str, default=None,
+                        help='Ablation family used by comparison reports.')
+    parser.add_argument('--ablation_config_hash', type=str, default=None,
+                        help='Stable hash of the resolved ablation registry entry.')
 
     parser.add_argument('--non_verbose', action='store_true')
     parser.add_argument('--csv_log', action='store_true',
