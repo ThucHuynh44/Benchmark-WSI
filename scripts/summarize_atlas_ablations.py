@@ -214,11 +214,15 @@ def _markdown(registry: Dict[str, Any], summaries: Sequence[dict]) -> str:
         ids = [entry["id"] for entry in registry["variants"].values() if entry["group"] == group]
         lines.extend(table(title, ids))
     leave_one_out = [
-        "full", "wo_replay", "wo_nce", "wo_reconstruction", "wo_manifold",
-        "wo_attention", "solm_none", "solm_hard", "prompt_only",
+        "full", "full_no_lora", "wo_replay", "wo_nce", "wo_reconstruction",
+        "wo_manifold", "wo_attention", "solm_none", "solm_hard", "prompt_only",
         "centroid_with_prompt_fallback",
     ]
     lines.extend(table("Leave-one-out", leave_one_out))
+    lines.extend(table(
+        "Attention-weight pilot",
+        ["atlas_ce", "att_w025", "att_w05", "add_attention"],
+    ))
     for axis, members in registry["axis_members"].items():
         lines.extend(table(f"Sweep: {axis}", [member["variant_id"] for member in members]))
     return "\n".join(lines)

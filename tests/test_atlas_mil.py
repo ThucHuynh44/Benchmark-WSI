@@ -1,4 +1,5 @@
 import copy
+import io
 import math
 import unittest
 from collections import namedtuple
@@ -267,6 +268,11 @@ class AtlasMethodTests(unittest.TestCase):
 
     def test_two_task_replay_boundary_and_checkpoint_round_trip(self):
         model = build()
+        self.assertTrue(model.lora_enabled)
+        self.assertTrue(model.lora_modules)
+        self.assertTrue(any(
+            isinstance(module, AtlasLoRALinear) for module in model.net.backbone.modules()
+        ))
         task0_bags = [make_bag(0, 0.2), make_bag(1, 0.5)]
         dataset0 = TaskDataset(0, task0_bags)
         model.begin_task(dataset0)
@@ -313,6 +319,66 @@ class AtlasMethodTests(unittest.TestCase):
         result = model.observe(*task1_bags[0], task=1)
         self.assertEqual(result["replay_bags"], 1.0)
         self.assertGreaterEqual(result["loss_attention"], 0.0)
+
+    def test_true_no_lora_lifecycle_and_checkpoint_round_trip(self):
+        args = atlas_args(
+            atlas_lora_enabled=False,
+            atlas_diagnostics=True,
+            ablation_id="full_no_lora",
+            ablation_group="architecture",
+            ablation_config_hash="no-lora-hash",
+        )
+        model = build(args)
+        self.assertFalse(model.lora_enabled)
+        self.assertEqual(dict(model.lora_modules), {})
+        self.assertFalse(any(
+            isinstance(module, AtlasLoRALinear) for module in model.net.backbone.modules()
+        ))
+        self.assertTrue(all(
+            not parameter.requires_grad for parameter in model.net.backbone.parameters()
+        ))
+        self.assertFalse(model.net.backbone.get_classifier().weight.requires_grad)
+        self.assertTrue(model.net.prompt_projector.weight.requires_grad)
+        self.assertTrue(all(
+            parameter.requires_grad for parameter in model.net.decoder.parameters()
+        ))
+        self.assertFalse(model._checkpoint_config()["lora_enabled"])
+
+        task0_bags = [make_bag(0, 0.2), make_bag(1, 0.5)]
+        dataset0 = TaskDataset(0, task0_bags)
+        model.begin_task(dataset0)
+        with torch.no_grad():
+            logits = model([*make_bag(0, 0.3)[:3]])[0]
+        self.assertTrue(torch.isfinite(logits).all())
+        for bag in task0_bags:
+            result = model.observe(*bag, task=0)
+            self.assertTrue(torch.isfinite(torch.tensor(result["loss"])))
+        for bag in task0_bags:
+            model.save_buffer(*bag, task=0)
+        with patch(
+            "models.atlas_mil.merge_atlas_lora",
+            side_effect=AssertionError("no-LoRA must not merge adapters"),
+        ):
+            model.end_task(dataset0)
+
+        payload = {
+            "state_dict": copy.deepcopy(model.state_dict()),
+            "method_state": copy.deepcopy(model.get_checkpoint_state()),
+        }
+        stream = io.BytesIO()
+        torch.save(payload, stream)
+        stream.seek(0)
+        restored_payload = torch.load(stream, map_location="cpu", weights_only=False)
+        restored = build(args)
+        restored.load_state_dict(restored_payload["state_dict"])
+        restored.load_checkpoint_state(restored_payload["method_state"])
+        probe = make_bag(0, 0.3)
+        with torch.no_grad():
+            expected = model([probe[0], probe[1], probe[2]])[0]
+            actual = restored([probe[0], probe[1], probe[2]])[0]
+        self.assertTrue(torch.allclose(expected, actual))
+        self.assertFalse(restored.lora_enabled)
+        self.assertEqual(dict(restored.lora_modules), {})
 
     def test_zero_weight_branches_are_not_called_or_advance_mask_rng(self):
         model = build(atlas_args(

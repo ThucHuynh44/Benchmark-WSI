@@ -96,7 +96,7 @@ def config_to_argv(config: Dict[str, Any]) -> List[str]:
     arguments: List[str] = []
     boolean_optional = {
         "early_stopping", "early_stopping_verbose",
-        "atlas_replay", "atlas_diagnostics",
+        "atlas_replay", "atlas_diagnostics", "atlas_lora_enabled",
     }
     for key, value in config.items():
         if value is None:

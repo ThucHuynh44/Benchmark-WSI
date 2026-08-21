@@ -3,7 +3,7 @@ defaults:
   backbone: feather
   folds: all
   result_root: ablations/atlas_mil
-  expected_variants: 31
+  expected_variants: 34
   atlas_overrides:
     atlas_replay: true
     atlas_diagnostics: true
@@ -68,6 +68,32 @@ variants:
       manifold_weight: 0.0
       attention_weight: 1.0
       atlas_lora_mode: none
+  att_w025:
+    id: att_w025
+    group: attention_pilot
+    model: atlas_mil
+    label: Attention KD weight 0.25
+    factor: attention_weight
+    value: 0.25
+    overrides:
+      atlas_nce_weight: 0.0
+      reconstruction_weight: 0.0
+      manifold_weight: 0.0
+      attention_weight: 0.25
+      atlas_lora_mode: none
+  att_w05:
+    id: att_w05
+    group: attention_pilot
+    model: atlas_mil
+    label: Attention KD weight 0.5
+    factor: attention_weight
+    value: 0.5
+    overrides:
+      atlas_nce_weight: 0.0
+      reconstruction_weight: 0.0
+      manifold_weight: 0.0
+      attention_weight: 0.5
+      atlas_lora_mode: none
   add_nce:
     id: add_nce
     group: additive
@@ -115,6 +141,15 @@ variants:
     factor: atlas_lora_mode
     value: semantic
     overrides: {}
+  full_no_lora:
+    id: full_no_lora
+    group: architecture
+    model: atlas_mil
+    label: Full ATLAS-MIL without LoRA
+    factor: atlas_lora_enabled
+    value: false
+    overrides:
+      atlas_lora_enabled: false
   wo_replay:
     id: wo_replay
     group: leave_one_out

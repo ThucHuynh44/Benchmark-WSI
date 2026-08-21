@@ -61,6 +61,12 @@ def get_parser() -> ArgumentParser:
     parser.add_argument("--atlas_logit_scale", type=float, default=10.0)
     parser.add_argument("--atlas_lora_rank", type=int, default=8)
     parser.add_argument(
+        "--atlas_lora_enabled",
+        action=BooleanOptionalAction,
+        default=True,
+        help="Attach and train fixed-rank ATLAS LoRA adapters.",
+    )
+    parser.add_argument(
         "--atlas_lora_mode", choices=("semantic", "hard", "none"), default="semantic"
     )
     parser.add_argument("--atlas_lora_merge_scale", type=float, default=1.0)
@@ -359,15 +365,19 @@ class AtlasMil(ContinualModel):
         if int(semantic_anchors.shape[0]) != num_classes:
             raise ValueError("ATLAS-MIL semantic anchor/global class count mismatch")
 
-        backbone_name = str(args.backbone).lower()
-        root = backbone.model if backbone_name == "feather" else backbone
-        root_name = "backbone.model" if backbone_name == "feather" else "backbone"
-        lora_modules = attach_atlas_lora(
-            root,
-            root_name=root_name,
-            classifier=classifier,
-            rank=int(args.atlas_lora_rank),
-        )
+        lora_enabled = bool(getattr(args, "atlas_lora_enabled", True))
+        if lora_enabled:
+            backbone_name = str(args.backbone).lower()
+            root = backbone.model if backbone_name == "feather" else backbone
+            root_name = "backbone.model" if backbone_name == "feather" else "backbone"
+            lora_modules = attach_atlas_lora(
+                root,
+                root_name=root_name,
+                classifier=classifier,
+                rank=int(args.atlas_lora_rank),
+            )
+        else:
+            lora_modules = {}
         for parameter in backbone.parameters():
             parameter.requires_grad_(False)
         for module in lora_modules.values():
@@ -385,6 +395,7 @@ class AtlasMil(ContinualModel):
             centroid_momentum=float(args.atlas_centroid_momentum),
         )
         super().__init__(network, loss, args, transform)
+        self.lora_enabled = lora_enabled
         object.__setattr__(self, "_lora_modules", lora_modules)
 
         self.num_classes = num_classes
@@ -941,11 +952,12 @@ class AtlasMil(ContinualModel):
         self.net.eval()
         diagnostic_row = None
         try:
-            merge_atlas_lora(
-                self.lora_modules,
-                rho=merge_rho,
-                scale=self.lora_merge_scale,
-            )
+            if self.lora_enabled:
+                merge_atlas_lora(
+                    self.lora_modules,
+                    rho=merge_rho,
+                    scale=self.lora_merge_scale,
+                )
             embeddings = self._finalize_current_atlas(dataset)
             if self.replay_enabled:
                 targets, embedding_drift, attention_drift, drift_count = (
@@ -976,7 +988,7 @@ class AtlasMil(ContinualModel):
         )
 
     def _checkpoint_config(self) -> Dict[str, Any]:
-        return {
+        config = {
             "backbone": str(self.args.backbone).lower(),
             "feature_dim": self.feature_dim,
             "embedding_dim": self.embedding_dim,
@@ -1009,6 +1021,12 @@ class AtlasMil(ContinualModel):
             "ablation_group": getattr(self.args, "ablation_group", None),
             "ablation_config_hash": getattr(self.args, "ablation_config_hash", None),
         }
+        # Keep the historical enabled-LoRA checkpoint config byte-for-byte
+        # compatible.  Only the new architecture ablation needs an explicit
+        # discriminator because True was the behavior before this flag existed.
+        if not self.lora_enabled:
+            config["lora_enabled"] = False
+        return config
 
     def get_run_metadata(self) -> Dict[str, Any]:
         config = self._checkpoint_config()

@@ -120,7 +120,7 @@ benchmark-defined starting points rather than published paper defaults.
 #### ATLAS-MIL ablations
 
 The declarative ablation matrix is stored in
-`configs/atlas_mil_ablations.yaml`. It resolves to 33 unique variants and 330
+`configs/atlas_mil_ablations.yaml`. It resolves to 34 unique variants and 340
 fold-runs; listing or dry-running the matrix does not start training:
 
 ```
@@ -154,6 +154,23 @@ python scripts/summarize_atlas_ablations.py --strict
 `sgd_ft` is an external reference, not an additive ATLAS stage. The
 `centroid_with_prompt_fallback` variant uses centroids only for finalized
 classes and deliberately falls back to their prompt anchors otherwise.
+
+For the architecture-selection stage, run the true no-LoRA control on all ten
+folds and the two intermediate Attention-KD weights only on folds 0–2:
+
+```
+python scripts/run_atlas_ablations.py run \
+  --variants full_no_lora --folds all --gpus 0
+
+python scripts/run_atlas_ablations.py run \
+  --variants att_w025 att_w05 --folds 0,1,2 --gpus 0
+```
+
+`full_no_lora` keeps replay, losses, prompts, centroids, and the frozen FEATHER
+backbone from `full`, but does not attach LoRA modules. This differs from
+`atlas_lora_mode=none`, which still trains and merges LoRA but skips the
+orthogonal projection. `atlas_ce` and `add_attention` remain the weight-0 and
+weight-1 endpoints of the Attention-KD pilot; they do not need to be rerun.
 
 ### LWSR, MICIL, OWLoRA, and QPMIL-VL
 
