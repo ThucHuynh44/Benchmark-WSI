@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
 from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
@@ -153,6 +154,8 @@ class WSIBagDataset(Dataset):
         feature_root: str,
         feature_dim: int,
         patch_size_level0_fallback: int = 1024,
+        backbone_name: str = "generic_mil",
+        require_unique_positional_grid: bool = False,
     ):
         self.slide_data = records.reset_index(drop=True).copy()
         self.feature_root = feature_root
@@ -160,6 +163,8 @@ class WSIBagDataset(Dataset):
         self.patch_size_level0_fallback = _validate_patch_size(
             patch_size_level0_fallback, "patch_size_level0_fallback"
         )
+        self.backbone_name = str(backbone_name).lower()
+        self.require_unique_positional_grid = bool(require_unique_positional_grid)
 
     def __len__(self):
         return len(self.slide_data)
@@ -173,12 +178,22 @@ class WSIBagDataset(Dataset):
                 raise KeyError(f"{path}: missing HDF5 datasets {missing}")
             features = torch.from_numpy(handle["features"][:]).float()
             coords = torch.from_numpy(handle["coords"][:]).long()
-            patch_size_level0 = _validate_patch_size(
-                handle["coords"].attrs.get(
-                    "patch_size_level0", self.patch_size_level0_fallback
-                ),
-                f"{path}: coords.attrs['patch_size_level0']",
-            )
+            if self.backbone_name == "gigapath":
+                from backbone.pretrained_mil import GIGAPATH_SLIDE_NGRIDS
+
+                patch_size_level0 = _validate_gigapath_h5(
+                    handle,
+                    path,
+                    slide_ngrids=GIGAPATH_SLIDE_NGRIDS,
+                    require_unique_grid=self.require_unique_positional_grid,
+                )
+            else:
+                patch_size_level0 = _validate_patch_size(
+                    handle["coords"].attrs.get(
+                        "patch_size_level0", self.patch_size_level0_fallback
+                    ),
+                    f"{path}: coords.attrs['patch_size_level0']",
+                )
         _validate_arrays(path, features.shape, coords.shape, self.feature_dim)
         return features, coords, patch_size_level0, int(row.label)
 
@@ -212,6 +227,101 @@ def _validate_arrays(path, feature_shape, coord_shape, feature_dim: int) -> None
         raise ValueError(f"{path}: empty WSI bag")
 
 
+def _require_patch_size_metadata(handle, path) -> int:
+    attrs = handle["coords"].attrs
+    if "patch_size_level0" not in attrs:
+        raise ValueError(
+            f"{path}: GigaPath requires actual "
+            "coords.attrs['patch_size_level0'] metadata"
+        )
+    value = attrs["patch_size_level0"]
+    if isinstance(value, np.ndarray):
+        if value.size != 1:
+            raise ValueError(
+                f"{path}: coords.attrs['patch_size_level0'] must be one positive integer"
+            )
+        value = value.item()
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+        raise ValueError(
+            f"{path}: coords.attrs['patch_size_level0'] must be stored as a "
+            f"positive integer, got {value!r}"
+        )
+    return _validate_patch_size(
+        value,
+        f"{path}: coords.attrs['patch_size_level0']",
+    )
+
+
+def _validate_gigapath_h5(
+    handle,
+    path,
+    *,
+    slide_ngrids: int,
+    require_unique_grid: bool,
+) -> int:
+    """Validate the coordinate contract used by pinned GigaPath LongNet."""
+    features = handle["features"]
+    coords_dataset = handle["coords"]
+    if not np.issubdtype(coords_dataset.dtype, np.integer):
+        raise ValueError(f"{path}: GigaPath coords must use an integer dtype")
+    if not np.isfinite(features[:]).all():
+        raise ValueError(f"{path}: GigaPath features contain NaN or Inf")
+
+    coords = coords_dataset[:]
+    if np.any(coords < 0):
+        raise ValueError(f"{path}: GigaPath coordinates must be non-negative")
+    patch_size_level0 = _require_patch_size_metadata(handle, path)
+    grid = np.floor_divide(coords, patch_size_level0)
+    if np.any(grid < 0) or np.any(grid >= int(slide_ngrids)):
+        minimum = grid.min(axis=0).tolist()
+        maximum = grid.max(axis=0).tolist()
+        raise ValueError(
+            f"{path}: GigaPath positional grid must be within "
+            f"[0,{int(slide_ngrids) - 1}], got min={minimum}, max={maximum}"
+        )
+
+    collisions = int(grid.shape[0] - np.unique(grid, axis=0).shape[0])
+    if collisions:
+        message = (
+            f"{path}: {collisions} GigaPath tiles share a positional grid index"
+        )
+        if require_unique_grid:
+            raise ValueError(message + " in a declared non-overlapping dataset")
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
+
+    attrs = coords_dataset.attrs
+    width, height = attrs.get("level0_width"), attrs.get("level0_height")
+    if width is not None and height is not None:
+        width = int(width)
+        height = int(height)
+        if width <= 0 or height <= 0:
+            raise ValueError(f"{path}: invalid level-0 slide bounds {width}x{height}")
+        if np.any(coords[:, 0] >= width) or np.any(coords[:, 1] >= height):
+            raise ValueError(
+                f"{path}: coordinate origin lies outside level-0 bounds "
+                f"{width}x{height}"
+            )
+
+    diagnostic_keys = (
+        "patch_size", "target_magnification", "level0_magnification"
+    )
+    if all(key in attrs for key in diagnostic_keys):
+        patch_size = float(attrs["patch_size"])
+        target_mag = float(attrs["target_magnification"])
+        level0_mag = float(attrs["level0_magnification"])
+        if patch_size > 0 and target_mag > 0 and level0_mag > 0:
+            estimated = int(round(patch_size * level0_mag / target_mag))
+            if estimated != patch_size_level0:
+                warnings.warn(
+                    f"{path}: magnification metadata suggests "
+                    f"patch_size_level0={estimated}, but the recorded source-of-truth "
+                    f"value is {patch_size_level0}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+    return patch_size_level0
+
+
 class Sequential_Generic_MIL_Dataset(ContinualDataset):
     NAME = "seq-wsi"
     SETTING = "class-il"
@@ -222,20 +332,25 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
         if getattr(args, "batch_size", 1) != 1:
             raise ValueError("seq-wsi supports batch_size=1 only")
         backbone_name = str(getattr(args, "backbone", "generic_mil")).lower()
-        if backbone_name in {"titan", "feather"}:
-            if int(getattr(args, "feature_dim", 768)) != 768:
-                raise ValueError(f"{backbone_name} requires --feature_dim 768")
+        if backbone_name in {"titan", "feather", "gigapath"}:
             from backbone.pretrained_mil import (
                 FEATHER_MODEL_ID,
                 FEATHER_REVISION,
+                GIGAPATH_MODEL_ID,
+                GIGAPATH_REVISION,
                 TITAN_MODEL_ID,
                 TITAN_REVISION,
             )
             defaults = {
-                "titan": (TITAN_MODEL_ID, TITAN_REVISION, 400),
-                "feather": (FEATHER_MODEL_ID, FEATHER_REVISION, 0),
+                "titan": (TITAN_MODEL_ID, TITAN_REVISION, 400, 768),
+                "feather": (FEATHER_MODEL_ID, FEATHER_REVISION, 0, 768),
+                "gigapath": (GIGAPATH_MODEL_ID, GIGAPATH_REVISION, 0, 1536),
             }
-            model_id, revision, max_patches = defaults[backbone_name]
+            model_id, revision, max_patches, required_dim = defaults[backbone_name]
+            if int(getattr(args, "feature_dim", required_dim)) != required_dim:
+                raise ValueError(
+                    f"{backbone_name} requires --feature_dim {required_dim}"
+                )
             if getattr(args, "backbone_model_id", None) is None:
                 args.backbone_model_id = model_id
             if getattr(args, "backbone_revision", None) is None:
@@ -249,6 +364,10 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
             "patch_size_level0_fallback",
         )
         self.config = load_dataset_config(getattr(args, "dataset_config", None))
+        self.backbone_name = backbone_name
+        self.require_unique_positional_grid = bool(
+            self.config.get("require_unique_positional_grid", False)
+        )
         self.task_order = list(self.config["task_order"])
         if getattr(args, "reverse_task_order", False):
             self.task_order.reverse()
@@ -277,7 +396,7 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
         return int(task_slice.stop)
 
     def metadata(self, fold: int) -> dict:
-        return {
+        result = {
             "fold": int(fold),
             "task_order": list(self.task_order),
             "task_num_classes": list(self.task_num_classes),
@@ -296,7 +415,7 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
                 "name": getattr(self.args, "backbone", "generic_mil"),
                 "model_id": getattr(self.args, "backbone_model_id", None),
                 "revision": getattr(self.args, "backbone_revision", None),
-                "pretrained": getattr(self.args, "backbone", "generic_mil") in {"titan", "feather"},
+                "pretrained": getattr(self.args, "backbone", "generic_mil") in {"titan", "feather", "gigapath"},
                 "freeze": bool(getattr(self.args, "backbone_freeze", False)),
                 "max_patches": int(getattr(self.args, "backbone_max_patches", 0) or 0),
                 "patch_size_level0_fallback": int(
@@ -309,6 +428,21 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
                 "num_classes": self.total_num_classes,
             },
         }
+        if self.backbone_name == "gigapath":
+            from backbone.pretrained_mil import (
+                GIGAPATH_ARCHITECTURE,
+                GIGAPATH_SLIDE_NGRIDS,
+                GIGAPATH_SOURCE_REVISION,
+            )
+
+            result["backbone_config"].update({
+                "architecture": GIGAPATH_ARCHITECTURE,
+                "source_revision": GIGAPATH_SOURCE_REVISION,
+                "slide_ngrids": GIGAPATH_SLIDE_NGRIDS,
+                "global_pool": True,
+                "precision": getattr(self.args, "resolved_precision", "fp16"),
+            })
+        return result
 
     def _paths_for_task(self, task_name: str, fold: int) -> Tuple[str, str, str]:
         split_dir = self.config["split_dirs"].get(task_name, "")
@@ -402,7 +536,15 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
             feature_dim = int(getattr(self.args, "feature_dim", 768))
             fallback = int(getattr(self.args, "patch_size_level0_fallback", 1024))
             self._split_cache[key] = tuple(
-                WSIBagDataset(record, feature_root, feature_dim, fallback) for record in records
+                WSIBagDataset(
+                    record,
+                    feature_root,
+                    feature_dim,
+                    fallback,
+                    backbone_name=self.backbone_name,
+                    require_unique_positional_grid=self.require_unique_positional_grid,
+                )
+                for record in records
             )
         return self._split_cache[key]
 
@@ -449,10 +591,20 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
                                     handle["coords"].shape,
                                     feature_dim,
                                 )
-                                _validate_patch_size(
-                                    handle["coords"].attrs.get("patch_size_level0", fallback),
-                                    f"{path}: coords.attrs['patch_size_level0']",
-                                )
+                                if self.backbone_name == "gigapath":
+                                    from backbone.pretrained_mil import GIGAPATH_SLIDE_NGRIDS
+
+                                    _validate_gigapath_h5(
+                                        handle,
+                                        path,
+                                        slide_ngrids=GIGAPATH_SLIDE_NGRIDS,
+                                        require_unique_grid=self.require_unique_positional_grid,
+                                    )
+                                else:
+                                    _validate_patch_size(
+                                        handle["coords"].attrs.get("patch_size_level0", fallback),
+                                        f"{path}: coords.attrs['patch_size_level0']",
+                                    )
                         except Exception as error:
                             errors.append(f"{task_name}/{split_name}/{slide_id}: {error}")
             except Exception as error:

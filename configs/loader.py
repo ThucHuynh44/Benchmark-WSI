@@ -68,5 +68,7 @@ def load_dataset_config(path: Optional[str] = None) -> Dict[str, Any]:
             key: _resolve(value, data_root)
             for key, value in raw.get("split_dirs", {}).items()
         },
+        "require_unique_positional_grid": bool(
+            raw.get("require_unique_positional_grid", False)
+        ),
     }
-

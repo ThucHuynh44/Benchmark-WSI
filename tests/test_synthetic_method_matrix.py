@@ -34,9 +34,9 @@ class FakeSlideBackbone(nn.Module):
         if contract not in {"titan", "feather"}:
             raise ValueError(f"Unknown fake backbone contract: {contract}")
         self.contract = contract
-        self.encoder = nn.Linear(768, 8)
+        self.encoder = nn.Linear(768, 768)
         self.attention_head = nn.Linear(768, 1)
-        self.classifier = nn.Linear(8, num_classes)
+        self.classifier = nn.Linear(768, num_classes)
         self.forward_calls = 0
 
     def forward_with_embedding(self, features, coords, patch_size_level0):

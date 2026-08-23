@@ -27,6 +27,7 @@ from utils.best_args import best_args
 from utils.conf import set_random_seed
 from utils.continual_training import train as ctrain
 from utils.training import train
+from utils.precision import resolve_precision_name
 
 try:
     import setproctitle
@@ -95,6 +96,7 @@ def parse_args():
         args = model_parser.parse_args(yaml_arguments + sys.argv[1:])
 
     _resolve_exp_desc(args)
+    resolve_precision_name(args)
     if args.seed is not None:
         set_random_seed(args.seed)
     return args

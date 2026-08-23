@@ -70,10 +70,10 @@ def fit_buffer(self, epochs, dataset):
             optimizer.zero_grad()
             bag = self.buffer.examples[index]
             label = self.buffer.labels[index]
-            logits = self.net(bag)[0]
+            logits = self.forward_net(bag)[0]
             loss = self.loss(logits, label)
-            loss.backward()
-            optimizer.step()
+            self.backward_loss(loss)
+            self.optimizer_step(optimizer)
             epoch_loss += float(loss.item())
             batch_bar.set_postfix(loss=f"{loss.item():.4f}", refresh=False)
         scheduler.step()
@@ -98,6 +98,7 @@ def fit_buffer(self, epochs, dataset):
     checkpoint_path.unlink(missing_ok=True)
 
 class GDumb(ContinualModel):
+    SUPPORTS_AMP = True
     NAME = 'gdumb'
     COMPATIBILITY = ['class-il', 'task-il']
 

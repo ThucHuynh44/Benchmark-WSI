@@ -51,9 +51,11 @@ class Micil(ContinualModel):
 
     NAME = "micil"
     COMPATIBILITY = ["class-il", "task-il"]
-    SUPPORTED_BACKBONES = ("titan", "feather")
+    SUPPORTED_BACKBONES = ("titan", "feather", "gigapath")
     REQUIRES_TRAINABLE_BACKBONE = True
-    REQUIRED_FEATURE_DIM = 768
+    REQUIRED_FEATURE_DIMS = {"titan": 768, "feather": 768, "gigapath": 1536}
+    SUPPORTS_AMP = True
+    SLIDE_EMBED_DIM = 768
     CHECKPOINT_VERSION = 1
 
     def __init__(self, backbone, loss, args, transform):
@@ -61,6 +63,7 @@ class Micil(ContinualModel):
         super().__init__(backbone, loss, args, transform)
 
         seed = getattr(args, "seed", 0)
+        self.input_feature_dim = int(args.feature_dim)
         self.num_classes = int(args.num_classes)
         self.replay_enabled = bool(getattr(args, "micil_replay", False))
         self.minibatch_size = max(1, int(getattr(args, "minibatch_size", 4) or 4))
@@ -86,7 +89,7 @@ class Micil(ContinualModel):
                 int(getattr(args, "buffer_size", 30)),
                 max_patches=int(getattr(args, "buffer_max_patches", 400)),
                 seed=0 if seed is None else int(seed),
-                feature_dim=768,
+                feature_dim=self.input_feature_dim,
             )
         # Avoid registering the frozen teacher as a child module.  It has its
         # own explicit checkpoint payload and must never enter the optimizer.
@@ -105,8 +108,11 @@ class Micil(ContinualModel):
             raise ValueError(
                 f"MICIL supports only {cls.SUPPORTED_BACKBONES}, got backbone={name!r}"
             )
-        if int(getattr(args, "feature_dim", 768)) != cls.REQUIRED_FEATURE_DIM:
-            raise ValueError("MICIL requires 768-D TITAN/FEATHER patch features")
+        expected_dim = cls.REQUIRED_FEATURE_DIMS[name]
+        if int(getattr(args, "feature_dim", expected_dim)) != expected_dim:
+            raise ValueError(
+                f"MICIL with {name} requires {expected_dim}-D raw patch features"
+            )
         if bool(getattr(args, "backbone_freeze", False)):
             raise ValueError("MICIL requires a trainable slide backbone")
         if int(getattr(args, "num_classes", 0)) <= 0:
@@ -207,7 +213,8 @@ class Micil(ContinualModel):
         coords: torch.Tensor,
         patch_size: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        output = model.forward_with_embedding(features, coords, patch_size)
+        with self.autocast_context():
+            output = model.forward_with_embedding(features, coords, patch_size)
         if not isinstance(output, dict):
             raise TypeError("forward_with_embedding must return a dictionary")
         logits = output.get("logits")
@@ -222,8 +229,11 @@ class Micil(ContinualModel):
             raise ValueError(
                 f"MICIL expects logits [1,{self.num_classes}], got {tuple(logits.shape)}"
             )
-        if embedding.ndim != 2 or embedding.shape[0] != 1:
-            raise ValueError(f"MICIL expects one slide embedding, got {tuple(embedding.shape)}")
+        if embedding.shape != (1, self.SLIDE_EMBED_DIM):
+            raise ValueError(
+                f"MICIL expects slide embedding [1,{self.SLIDE_EMBED_DIM}], "
+                f"got {tuple(embedding.shape)}"
+            )
         if not torch.isfinite(logits).all() or not torch.isfinite(embedding).all():
             raise FloatingPointError("MICIL backbone returned non-finite values")
         return logits, embedding
@@ -246,7 +256,9 @@ class Micil(ContinualModel):
         teacher_logits: List[torch.Tensor] = []
         teacher_embeddings: List[torch.Tensor] = []
         for raw_batch in batches:
-            features, coords, patch_size, label = unpack_prepared_batch(raw_batch)
+            features, coords, patch_size, label = unpack_prepared_batch(
+                raw_batch, feature_dim=self.input_feature_dim
+            )
             logits, embedding = self._forward_embedding(
                 self.net, features, coords, patch_size
             )
@@ -386,8 +398,8 @@ class Micil(ContinualModel):
         )
         if not torch.isfinite(loss):
             raise FloatingPointError("MICIL produced a non-finite loss")
-        loss.backward()
-        self.opt.step()
+        self.backward_loss(loss)
+        self.optimizer_step()
         self._normalize_classifier()
 
         return {
@@ -444,7 +456,7 @@ class Micil(ContinualModel):
             "version": self.CHECKPOINT_VERSION,
             "method": self.NAME,
             "backbone": str(getattr(self.args, "backbone", "")).lower(),
-            "feature_dim": 768,
+            "feature_dim": self.input_feature_dim,
             "replay_enabled": self.replay_enabled,
             "config": self._checkpoint_config(),
             "current_task": self.current_task,
@@ -469,7 +481,7 @@ class Micil(ContinualModel):
             "version": self.CHECKPOINT_VERSION,
             "method": self.NAME,
             "backbone": str(getattr(self.args, "backbone", "")).lower(),
-            "feature_dim": 768,
+            "feature_dim": self.input_feature_dim,
         }
         for key, value in expected.items():
             if strict and state.get(key) != value:

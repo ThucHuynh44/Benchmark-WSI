@@ -24,6 +24,7 @@ def get_parser() -> ArgumentParser:
 
 
 class EwcOn(ContinualModel):
+    SUPPORTS_AMP = True
     NAME = 'ewc_on'
     COMPATIBILITY = ['class-il', 'domain-il', 'task-il']
 
@@ -50,11 +51,15 @@ class EwcOn(ContinualModel):
             )
             labels = labels.to(self.device)
             self.opt.zero_grad()
-            logits = self.net([features, coords, patch_size])[0]
+            logits = self.forward_net([features, coords, patch_size])[0]
             loss = -F.nll_loss(self.logsoft(logits), labels, reduction='none').mean()
             exp_cond_prob = torch.exp(loss.detach())
-            loss.backward()
-            fish += exp_cond_prob * self.net.get_grads() ** 2
+            self.backward_loss(loss)
+            gradients = torch.cat([
+                self.unscaled_gradient(parameter)
+                for parameter in self.net.parameters()
+            ])
+            fish += exp_cond_prob * gradients ** 2
 
         fish /= (len(dataset.train_loader) * self.args.batch_size)
 
@@ -69,11 +74,11 @@ class EwcOn(ContinualModel):
     def observe(self, features, coords, patch_size, labels, task=None, ssl=False):
 
         self.opt.zero_grad()
-        outputs = self.net([features, coords, patch_size])[0]
+        outputs = self.forward_net([features, coords, patch_size])[0]
         penalty = self.penalty()
         loss = self.loss(outputs, labels) + self.args.e_lambda * penalty
         assert not torch.isnan(loss)
-        loss.backward()
-        self.opt.step()
+        self.backward_loss(loss)
+        self.optimizer_step()
 
         return loss.item()

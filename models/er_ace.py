@@ -19,6 +19,7 @@ def get_parser() -> ArgumentParser:
 
 
 class ErACE(ContinualModel):
+    SUPPORTS_AMP = True
     NAME = 'er_ace'
     COMPATIBILITY = ['class-il', 'task-il']
 
@@ -37,7 +38,7 @@ class ErACE(ContinualModel):
         present = labels.unique()
         self.seen_so_far = torch.cat([self.seen_so_far, present]).unique()
 
-        logits = self.net([features, coords, patch_size])[0]
+        logits = self.forward_net([features, coords, patch_size])[0]
         mask = torch.zeros_like(logits)
         mask[:, present] = 1
 
@@ -54,12 +55,12 @@ class ErACE(ContinualModel):
         if self.task > 0:
             # sample from buffer
             buf_inputs, buf_labels = self.buffer.get_data()
-            loss_re = self.loss(self.net(buf_inputs)[0], buf_labels)
+            loss_re = self.loss(self.forward_net(buf_inputs)[0], buf_labels)
 
         loss += loss_re
 
-        loss.backward()
-        self.opt.step()
+        self.backward_loss(loss)
+        self.optimizer_step()
 
         self.buffer.add_data(examples=[features, coords, patch_size],
                              labels=labels)

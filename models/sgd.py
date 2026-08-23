@@ -16,6 +16,7 @@ def get_parser() -> ArgumentParser:
 
 
 class Sgd(ContinualModel):
+    SUPPORTS_AMP = True
     NAME = 'sgd'
     COMPATIBILITY = ['class-il', 'domain-il', 'task-il', 'general-continual']
 
@@ -24,10 +25,10 @@ class Sgd(ContinualModel):
 
     def observe(self, inputs0, inputs1, patch_size, labels, t=None, ssl=False):
         self.opt.zero_grad()
-        outputs = self.net([inputs0, inputs1, patch_size])
+        outputs = self.forward_net([inputs0, inputs1, patch_size])
         # import ipdb;ipdb.set_trace()
         loss = self.loss(outputs[0], labels)
-        loss.backward()
-        self.opt.step()
+        self.backward_loss(loss)
+        self.optimizer_step()
 
         return loss.item()

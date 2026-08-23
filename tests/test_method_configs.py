@@ -25,11 +25,11 @@ class MethodConfigTests(unittest.TestCase):
         }
         supported = [
             *((method, backbone) for method in baseline_methods
-              for backbone in ("generic_mil", "titan", "feather")),
+              for backbone in ("generic_mil", "titan", "feather", "gigapath")),
             *((method, backbone) for method in ("atlas_mil", "amil")
               for backbone in ("generic_mil", "feather")),
             *((method, backbone) for method in ("lwsr", "micil")
-              for backbone in ("titan", "feather")),
+              for backbone in ("titan", "feather", "gigapath")),
             *(("owlora", backbone) for backbone in ("titan", "feather")),
             ("qpmil_vl", "titan"),
         ]
@@ -56,7 +56,12 @@ class MethodConfigTests(unittest.TestCase):
                 self.assertGreaterEqual(args.early_stopping_min_epoch, 0)
                 self.assertGreaterEqual(args.early_stopping_min_delta, 0.0)
                 self.assertEqual(args.evaluate_fwt, raw["common"]["evaluate_fwt"])
-                self.assertEqual(args.feature_dim, 768)
+                expected_dim = 1536 if backbone == "gigapath" else 768
+                self.assertEqual(args.feature_dim, expected_dim)
+                self.assertEqual(
+                    args.resolved_precision,
+                    "fp16" if backbone == "gigapath" else "fp32",
+                )
                 buffer_size = raw["methods"][method].get("buffer_size")
                 buffer_tag = (
                     f"buffer{buffer_size}" if buffer_size is not None else "nobuffer"
@@ -98,6 +103,7 @@ class MethodConfigTests(unittest.TestCase):
         path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         invalid = [
             ("atlas_mil", "titan", []),
+            ("atlas_mil", "gigapath", []),
             ("atlas_mil", "feather", ["--backbone_freeze"]),
             ("atlas_mil", "feather", ["--backbone_max_patches", "1"]),
             ("atlas_mil", "feather", ["--feature_dim", "512"]),
@@ -105,10 +111,13 @@ class MethodConfigTests(unittest.TestCase):
             ("atlas_mil", "feather", ["--atlas_lora_rank", "0"]),
             ("atlas_mil", "feather", ["--atlas_nce_weight", "-1"]),
             ("amil", "titan", []),
+            ("amil", "gigapath", []),
             ("lwsr", "generic_mil", []),
             ("micil", "generic_mil", []),
             ("owlora", "generic_mil", []),
+            ("owlora", "gigapath", []),
             ("qpmil_vl", "feather", []),
+            ("qpmil_vl", "gigapath", []),
             ("amil", "generic_mil", ["--backbone_freeze"]),
             ("amil", "generic_mil", ["--backbone_max_patches", "1"]),
             ("amil", "feather", ["--feature_dim", "512"]),

@@ -1,12 +1,17 @@
 import unittest
+import sys
+import types
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
 from backbone.generic_mil import GenericMILBackbone
 from backbone.pretrained_mil import (
     FeatherMILBackbone,
+    GigaPathMILBackbone,
     TitanMILBackbone,
+    _load_gigapath_slide,
     _initialize_feather_classifier,
 )
 from models.utils.continual_model import ContinualModel
@@ -71,6 +76,28 @@ class FakeNativeFeather(torch.nn.Module):
         torch.nn.init.zeros_(self.model.classifier.bias)
 
 
+class FakeGigaPathSlide(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.patch_embed = torch.nn.Module()
+        self.patch_embed.proj = torch.nn.Linear(1536, 768)
+        self.cls_token = torch.nn.Parameter(torch.zeros(1, 1, 768))
+        self.tile_size = 256
+        self.slide_ngrids = 1000
+        self.tile_size_at_forward = None
+        self.all_layer_embed = None
+
+    def coords_to_pos(self, coords, tile_size=256):
+        grid = torch.floor(coords / tile_size)
+        return (grid[..., 0] * self.slide_ngrids + grid[..., 1]).long() + 1
+
+    def forward(self, features, coords, all_layer_embed=False):
+        self.tile_size_at_forward = self.tile_size
+        self.all_layer_embed = all_layer_embed
+        embedded = self.patch_embed.proj(features).mean(dim=1)
+        return [embedded, torch.full_like(embedded, -999)]
+
+
 class NativeAdapterTests(unittest.TestCase):
     def setUp(self):
         self.features = torch.randn(19, 768)
@@ -125,6 +152,40 @@ class NativeAdapterTests(unittest.TestCase):
         self.assertTrue(GenericMILBackbone.has_genuine_patch_attention)
         self.assertTrue(FeatherMILBackbone.has_genuine_patch_attention)
         self.assertFalse(TitanMILBackbone.has_genuine_patch_attention)
+        self.assertFalse(GigaPathMILBackbone.has_genuine_patch_attention)
+
+    def test_gigapath_runtime_tile_size_output_index_and_backward(self):
+        encoder = FakeGigaPathSlide()
+        model = GigaPathMILBackbone(encoder, 27)
+        self.assertEqual(encoder.tile_size, 256)
+        features = torch.randn(19, 1536)
+        coords = torch.tensor([[0, 1023], [1024, 2048]]).repeat(10, 1)[:19]
+        output = model([features, coords, torch.tensor(1024)])
+        self.assertEqual(encoder.tile_size_at_forward, 1024)
+        self.assertFalse(encoder.all_layer_embed)
+        self.assertEqual(output[0].shape, (1, 27))
+        self.assertEqual(output[3].shape, (1, 19))
+        self.assertTrue(torch.allclose(output[3], torch.full((1, 19), 1 / 19)))
+        enriched = model.forward_with_embedding(features, coords, 1024)
+        self.assertEqual(enriched["embedding"].shape, (1, 768))
+        enriched["logits"].sum().backward()
+        self.assertIsNotNone(encoder.patch_embed.proj.weight.grad)
+
+        frozen = GigaPathMILBackbone(FakeGigaPathSlide(), 27, freeze=True)
+        self.assertFalse(any(
+            parameter.requires_grad for parameter in frozen.slide_encoder.parameters()
+        ))
+        self.assertTrue(all(
+            parameter.requires_grad for parameter in frozen.classifier.parameters()
+        ))
+
+    def test_gigapath_coords_to_pos_uses_runtime_tile_size(self):
+        encoder = FakeGigaPathSlide()
+        coords = torch.tensor([[[0, 1023], [1024, 2048], [1023999, 1023999]]])
+        positions = encoder.coords_to_pos(coords, 1024)
+        expected_grid = torch.floor(coords / 1024).long()
+        expected = expected_grid[..., 0] * 1000 + expected_grid[..., 1] + 1
+        self.assertTrue(torch.equal(positions, expected))
 
     def test_generic_mil_exposes_embedding_and_classifier_contract(self):
         model = GenericMILBackbone(768, 27, hidden_dim=16)
@@ -173,6 +234,53 @@ class SamplingTests(unittest.TestCase):
         prepared = model.prepare_inputs(features, coords, 512, training=True)
         self.assertEqual(prepared[0].shape[0], 41)
         self.assertEqual(int(prepared[2]), 512)
+
+
+class GigaPathCheckpointContractTests(unittest.TestCase):
+    def _load(self, mutate=None):
+        template = FakeGigaPathSlide()
+        state = {key: value.detach().clone() for key, value in template.state_dict().items()}
+        if mutate is not None:
+            mutate(state)
+        calls = {}
+
+        def factory(**kwargs):
+            calls["kwargs"] = dict(kwargs)
+            return FakeGigaPathSlide()
+
+        package = types.ModuleType("gigapath")
+        package.__path__ = []
+        module = types.ModuleType("gigapath.slide_encoder")
+        module.gigapath_slide_enc12l768d = factory
+        package.slide_encoder = module
+        with patch.dict(
+            sys.modules,
+            {"gigapath": package, "gigapath.slide_encoder": module},
+        ), patch("torch.load", return_value={"model": state}):
+            loaded = _load_gigapath_slide("slide_encoder.pth")
+        return loaded, calls
+
+    def test_constructor_and_exact_release_contract(self):
+        loaded, calls = self._load()
+        self.assertIsInstance(loaded, FakeGigaPathSlide)
+        self.assertEqual(calls["kwargs"], {"in_chans": 1536, "global_pool": True})
+        self.assertNotIn("tile_size", calls["kwargs"])
+
+    def test_missing_cls_token_is_never_allowed(self):
+        with self.assertRaisesRegex(RuntimeError, "cls_token"):
+            self._load(lambda state: state.pop("cls_token"))
+
+    def test_future_unexpected_key_fails(self):
+        with self.assertRaisesRegex(RuntimeError, "contract changed"):
+            self._load(lambda state: state.update({"future.weight": torch.ones(1)}))
+
+    def test_projection_shape_and_finite_weights_are_validated(self):
+        with self.assertRaisesRegex(ValueError, "projection mismatch"):
+            self._load(lambda state: state.__setitem__(
+                "patch_embed.proj.weight", torch.ones(768, 12)
+            ))
+        with self.assertRaisesRegex(ValueError, "NaN or Inf"):
+            self._load(lambda state: state["cls_token"].fill_(float("nan")))
 
 
 if __name__ == "__main__":

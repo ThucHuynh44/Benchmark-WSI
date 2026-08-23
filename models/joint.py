@@ -16,6 +16,7 @@ def get_parser() -> ArgumentParser:
 
 
 class Joint(ContinualModel):
+    SUPPORTS_AMP = True
     NAME = "joint"
     COMPATIBILITY = ["class-il", "task-il"]
 
@@ -56,10 +57,10 @@ class Joint(ContinualModel):
                 )
                 labels = labels.to(self.device)
                 self.opt.zero_grad()
-                logits = self.net([features, coords, patch_size])[0]
+                logits = self.forward_net([features, coords, patch_size])[0]
                 loss = self.loss(logits, labels.long())
-                loss.backward()
-                self.opt.step()
+                self.backward_loss(loss)
+                self.optimizer_step()
                 epoch_loss += float(loss.item())
                 epoch_updates += 1
                 batch_bar.set_postfix(loss=f"{loss.item():.4f}", refresh=False)

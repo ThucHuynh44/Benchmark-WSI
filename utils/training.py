@@ -534,6 +534,12 @@ def checkpoint_payload(model, dataset, fold: int):
         and getattr(model, "opt", None) is not None
     ):
         payload["optimizer_state"] = model.opt.state_dict()
+    precision_policy = getattr(model, "precision_policy", None)
+    if precision_policy is not None and precision_policy.enabled:
+        payload["precision_state"] = {
+            "resolved_precision": precision_policy.name,
+            "scaler_state": precision_policy.state_dict(),
+        }
     method_state = model.get_checkpoint_state()
     if method_state is not None:
         payload["method_state"] = method_state
@@ -586,6 +592,20 @@ def load_checkpoint(model, path, dataset, fold: int):
         model.load_state_dict(payload["state_dict"])
     if "optimizer_state" in payload and getattr(model, "opt", None) is not None:
         model.opt.load_state_dict(payload["optimizer_state"])
+    precision_policy = getattr(model, "precision_policy", None)
+    saved_precision = payload.get("precision_state")
+    if precision_policy is not None and precision_policy.enabled:
+        if not isinstance(saved_precision, dict):
+            raise ValueError(f"AMP checkpoint is missing precision_state: {path}")
+        if saved_precision.get("resolved_precision") != precision_policy.name:
+            raise ValueError(
+                "Checkpoint precision mismatch: "
+                f"saved={saved_precision.get('resolved_precision')!r}, "
+                f"expected={precision_policy.name!r}"
+            )
+        precision_policy.load_state_dict(saved_precision.get("scaler_state"))
+    elif saved_precision is not None:
+        raise ValueError("FP32 run cannot load checkpoint AMP precision state")
     if "method_state" in payload:
         model.load_checkpoint_state(payload["method_state"], strict=True)
     elif type(model).get_checkpoint_state is not ContinualModel.get_checkpoint_state:

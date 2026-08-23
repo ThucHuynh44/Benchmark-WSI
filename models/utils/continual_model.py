@@ -9,6 +9,7 @@ import torchvision
 from argparse import Namespace
 from utils.conf import get_device
 from utils.optim import build_optimizer
+from utils.precision import PrecisionPolicy
 
 
 class ContinualModel(nn.Module):
@@ -20,6 +21,7 @@ class ContinualModel(nn.Module):
     SUPPORTED_BACKBONES = None
     REQUIRED_FEATURE_DIM = None
     REQUIRES_TRAINABLE_BACKBONE = False
+    SUPPORTS_AMP = False
     CHECKPOINT_USES_STATE_DICT = True
     CHECKPOINT_INCLUDE_OPTIMIZER = True
 
@@ -33,6 +35,32 @@ class ContinualModel(nn.Module):
         self.transform = transform
         self.opt = build_optimizer(self.net.parameters(), self.args)
         self.device = get_device()
+        self.precision_policy = PrecisionPolicy(self.args, self.device)
+
+    def autocast_context(self):
+        return self.precision_policy.autocast()
+
+    def forward_net(self, x, coords=None, patch_size_level0=None):
+        with self.autocast_context():
+            if isinstance(x, (list, tuple)):
+                return self.net(x)
+            if coords is not None:
+                return self.net([x, coords, patch_size_level0])
+            return self.net(x)
+
+    def backward_loss(self, loss, **kwargs) -> None:
+        self.precision_policy.backward(loss, **kwargs)
+
+    def optimizer_step(self, optimizer=None) -> None:
+        self.precision_policy.step(self.opt if optimizer is None else optimizer)
+
+    def unscaled_gradient(self, parameter: torch.nn.Parameter) -> torch.Tensor:
+        if parameter.grad is None:
+            return torch.zeros_like(parameter).view(-1)
+        return (parameter.grad.detach() / self.precision_policy.gradient_scale()).view(-1)
+
+    def gradient_for_scaled_step(self, gradient: torch.Tensor) -> torch.Tensor:
+        return gradient * self.precision_policy.gradient_scale()
 
     def prepare_inputs(self, features, coords, patch_size_level0, training=None):
         """Sample a bag before device transfer and return the common backbone input."""
@@ -63,11 +91,7 @@ class ContinualModel(nn.Module):
         :param task_label: some models require the task label
         :return: the result of the computation
         """
-        if isinstance(x, (list, tuple)):
-            return self.net(x)
-        if coords is not None:
-            return self.net([x, coords, patch_size_level0])
-        return self.net(x)
+        return self.forward_net(x, coords, patch_size_level0)
 
     def observe_many(self, batches, task=None, ssl=False):
         """Fallback logical-batch hook.

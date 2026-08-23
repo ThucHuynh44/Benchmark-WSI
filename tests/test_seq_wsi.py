@@ -14,6 +14,7 @@ from configs.loader import load_dataset_config
 from datasets.seq_wsi import (
     PreflightError,
     Sequential_Generic_MIL_Dataset,
+    _validate_gigapath_h5,
     normalize_slide_id,
     parse_folds,
 )
@@ -85,6 +86,87 @@ class DatasetConfigTests(unittest.TestCase):
         reversed_dataset = Sequential_Generic_MIL_Dataset(reverse_args)
         self.assertEqual(reversed_dataset.task_num_classes, list(reversed(dataset.task_num_classes)))
         self.assertEqual(reversed_dataset.total_num_classes, 27)
+
+
+class GigaPathPreflightTests(unittest.TestCase):
+    def _write(self, path, coords, patch_size_level0=1024, **attrs):
+        with h5py.File(path, "w") as handle:
+            handle.create_dataset(
+                "features", data=np.ones((len(coords), 1536), dtype=np.float32)
+            )
+            dataset = handle.create_dataset("coords", data=np.asarray(coords))
+            if patch_size_level0 is not None:
+                dataset.attrs["patch_size_level0"] = patch_size_level0
+            for key, value in attrs.items():
+                dataset.attrs[key] = value
+
+    def _validate(self, path, strict=False):
+        with h5py.File(path, "r") as handle:
+            return _validate_gigapath_h5(
+                handle,
+                path,
+                slide_ngrids=1000,
+                require_unique_grid=strict,
+            )
+
+    def test_requires_actual_patch_size_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bag.h5"
+            self._write(path, [[0, 0]], patch_size_level0=None)
+            with self.assertRaisesRegex(ValueError, "requires actual"):
+                self._validate(path)
+            self._write(path, [[0, 0]], patch_size_level0=1024.0)
+            with self.assertRaisesRegex(ValueError, "stored as a positive integer"):
+                self._validate(path)
+
+    def test_negative_and_out_of_grid_coordinates_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bag.h5"
+            self._write(path, [[-1, 0]])
+            with self.assertRaisesRegex(ValueError, "non-negative"):
+                self._validate(path)
+            self._write(path, [[1024000, 0]])
+            with self.assertRaisesRegex(ValueError, r"within \[0,999\]"):
+                self._validate(path)
+
+    def test_grid_boundary_and_column_order_are_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bag.h5"
+            coords = np.asarray([[1023999, 0], [0, 1023999]], dtype=np.int64)
+            self._write(path, coords)
+            self.assertEqual(self._validate(path), 1024)
+            expected = np.floor_divide(coords, 1024)
+            self.assertTrue(np.array_equal(expected, [[999, 0], [0, 999]]))
+
+    def test_duplicate_grid_is_conditional_and_magnification_is_diagnostic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bag.h5"
+            self._write(
+                path,
+                [[0, 0], [12, 15]],
+                patch_size_level0=1024,
+                patch_size=256,
+                target_magnification=20,
+                level0_magnification=40,
+            )
+            with self.assertWarnsRegex(RuntimeWarning, "share a positional grid"):
+                self._validate(path, strict=False)
+            with self.assertRaisesRegex(ValueError, "non-overlapping"):
+                self._validate(path, strict=True)
+
+    def test_magnification_mismatch_is_warning_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bag.h5"
+            self._write(
+                path,
+                [[0, 0]],
+                patch_size_level0=1024,
+                patch_size=256,
+                target_magnification=20,
+                level0_magnification=40,
+            )
+            with self.assertWarnsRegex(RuntimeWarning, "source-of-truth"):
+                self.assertEqual(self._validate(path), 1024)
 
 
 class LoaderSchemaTests(unittest.TestCase):

@@ -190,6 +190,10 @@ python utils/main.py --config configs/methods.yaml \
   --model micil --backbone feather --micil_replay
 
 python utils/main.py --config configs/methods.yaml \
+  --model lwsr --backbone gigapath \
+  --dataset_config configs/datasets_gigapath.yaml
+
+python utils/main.py --config configs/methods.yaml \
   --model owlora --backbone titan
 
 python utils/main.py --config configs/methods.yaml \
@@ -201,19 +205,20 @@ python utils/main.py --config configs/methods.yaml \
 
 Supported combinations are deliberately narrow:
 
-| Method | TITAN | FEATHER | `generic_mil` | Frozen backbone |
-| --- | --- | --- | --- | --- |
-| ATLAS-MIL | no | yes | tests | base frozen; LoRA/projector/decoder train |
-| LWSR | yes | yes | no | no |
-| MICIL | yes | yes | no | no |
-| OWLoRA | yes | yes | no | no |
-| QPMIL-VL | yes | no | no | TITAN text tower is always frozen |
+| Method | TITAN | FEATHER | GigaPath | `generic_mil` | Frozen backbone |
+| --- | --- | --- | --- | --- | --- |
+| ATLAS-MIL | no | yes | no | tests | base frozen; LoRA/projector/decoder train |
+| LWSR | yes | yes | yes | no | no |
+| MICIL | yes | yes | yes | no | no |
+| OWLoRA | yes | yes | no | no | no |
+| QPMIL-VL | yes | no | no | no | TITAN text tower is always frozen |
 
-Unsupported combinations fail before loading a pretrained model. All five
-method families require 768-D patch features. LWSR, MICIL, and OWLoRA require a
-trainable slide backbone, while QPMIL-VL loads only the pinned TITAN text tower
-and does not use the TITAN slide aggregator. ATLAS-MIL owns its freezing and
-adaptation policy internally.
+Unsupported combinations fail before loading a pretrained model. LWSR and
+MICIL use 768-D raw bags with TITAN/FEATHER and 1536-D raw bags with GigaPath;
+their slide embedding and classifier input remain 768-D. OWLoRA requires 768-D
+features. LWSR, MICIL, and OWLoRA require a trainable slide backbone, while
+QPMIL-VL loads only the pinned TITAN text tower and does not use the TITAN slide
+aggregator. ATLAS-MIL owns its freezing and adaptation policy internally.
 
 The LWSR defaults are `buffer_size=10`, `minibatch_size=4`,
 `bags_per_update=4`, `buffer_max_patches=400`, `pair_loss_weight=1.0`,
@@ -329,7 +334,8 @@ The WSI loader uses a backbone-independent HDF5 schema:
 
 - `features`: float tensor with shape `[num_patches, feature_dim]`.
 - `coords`: integer tensor with shape `[num_patches, 2]`.
-- `coords.attrs["patch_size_level0"]`: optional positive integer metadata.
+- `coords.attrs["patch_size_level0"]`: positive integer metadata (required by
+  GigaPath; optional with a configured fallback for older backbones).
 
 For the ten-dataset stream, `coords` is required by strict preflight. MIL batch
 size is fixed to one because bags have variable patch counts. The default class
@@ -350,7 +356,29 @@ validation/test use deterministic evenly spaced indices. FEATHER and generic
 MIL use the full bag. Both pretrained profiles fine-tune the complete slide
 encoder unless `--backbone_freeze` is supplied.
 
-Pinned snapshots are cache-only by default. In the `merge_thuc` environment,
+The native `gigapath` profile consumes the 1536-D tile embeddings produced by
+the Prov-GigaPath feature pipeline and emits a 768-D slide embedding. Copy
+`configs/datasets_gigapath.yaml.example` to the ignored local
+`configs/datasets_gigapath.yaml`, then edit paths if needed. Its preflight
+requires the recorded `patch_size_level0`, integer non-negative coordinates,
+and positional grids in `[0,999]`; the supplied config also declares
+non-overlapping tiling, so duplicate grids are errors. Other configs receive a
+collision warning unless they opt into that guarantee. Coordinate columns are
+passed through exactly as stored.
+
+Use the dedicated environment without modifying `merge_thuc`:
+
+```bash
+conda env create -f environment.gigapath.yaml
+conda activate benchmark_gigapath
+```
+
+The source package and `slide_encoder.pth` are pinned separately. GigaPath
+`--precision auto` resolves to FP16; BF16 is available on supported CUDA GPUs,
+and FP32 is rejected because the pinned CUDA FlashAttention path accepts only
+FP16/BF16. Other backbones keep the legacy FP32 path under `auto`.
+
+Pinned snapshots/files are cache-only by default. In the relevant environment,
 point `HF_HOME` or `--backbone_cache_dir` at the existing Hugging Face cache.
 To permit a missing snapshot to be downloaded explicitly, add
 `--backbone_allow_download`; authentication is read only from the `HF_TOKEN`

@@ -33,6 +33,7 @@ def modified_kl_div(old, new):
 
 
 class Lwf(ContinualModel):
+    SUPPORTS_AMP = True
     NAME = 'lwf'
     COMPATIBILITY = ['class-il', 'task-il']
 
@@ -56,12 +57,13 @@ class Lwf(ContinualModel):
     def observe(self, features, coords, patch_size, labels, task=None, ssl=False):
         self.opt.zero_grad()
         backbone_inputs = [features, coords, patch_size]
-        logits = self.net(backbone_inputs)[0]
+        logits = self.forward_net(backbone_inputs)[0]
         loss = self.loss(logits, labels)
         if self.old_net is not None and task is not None and task > 0:
             old_class_count = self.args.class_offsets[task]
             with torch.no_grad():
-                old_logits = self.old_net(backbone_inputs)[0][:, :old_class_count]
+                with self.autocast_context():
+                    old_logits = self.old_net(backbone_inputs)[0][:, :old_class_count]
             temperature = self.args.softmax_temp
             teacher = torch.softmax(old_logits / temperature, dim=1)
             student = torch.log_softmax(logits[:, :old_class_count] / temperature, dim=1)
@@ -70,7 +72,7 @@ class Lwf(ContinualModel):
             ) * (temperature ** 2)
             loss += self.args.alpha * distillation
 
-        loss.backward()
-        self.opt.step()
+        self.backward_loss(loss)
+        self.optimizer_step()
 
         return loss.item()

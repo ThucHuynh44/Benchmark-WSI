@@ -23,6 +23,7 @@ def get_parser() -> ArgumentParser:
 
 
 class Derpp(ContinualModel):
+    SUPPORTS_AMP = True
     NAME = 'derpp'
     COMPATIBILITY = ['class-il', 'domain-il', 'task-il', 'general-continual']
 
@@ -34,13 +35,13 @@ class Derpp(ContinualModel):
     def observe(self, inputs0, inputs1, patch_size, labels, task, ssl=False):
         if task == 0 and ssl:
             self.opt.zero_grad()
-            outputs = self.net([inputs0, inputs1, patch_size])
+            outputs = self.forward_net([inputs0, inputs1, patch_size])
             loss = 0.001 * outputs[-1].mean()
-            loss.backward()
-            self.opt.step()
+            self.backward_loss(loss)
+            self.optimizer_step()
         else:
             self.opt.zero_grad()
-            outputs = self.net([inputs0, inputs1, patch_size])
+            outputs = self.forward_net([inputs0, inputs1, patch_size])
             # import ipdb;ipdb.set_trace()
             # loss = self.loss(outputs[0], labels) + 0.000001 * outputs[-1].mean()
             loss = self.loss(outputs[0], labels)
@@ -49,16 +50,16 @@ class Derpp(ContinualModel):
             if not self.buffer.is_empty():
                 # import ipdb;ipdb.set_trace()
                 buf_inputs, _, buf_logits = self.buffer.get_data()
-                buf_outputs = self.net(buf_inputs)
+                buf_outputs = self.forward_net(buf_inputs)
                 # import ipdb;ipdb.set_trace()
                 loss += self.args.alpha * F.mse_loss(buf_outputs[0], buf_logits)
 
                 buf_inputs, buf_labels, _ = self.buffer.get_data()
-                buf_outputs = self.net(buf_inputs)
+                buf_outputs = self.forward_net(buf_inputs)
                 loss += self.args.beta * self.loss(buf_outputs[0], buf_labels)
 
-            loss.backward()
-            self.opt.step()
+            self.backward_loss(loss)
+            self.optimizer_step()
 
             if self.args.buffer_size != 0:
                 self.buffer.add_data(examples=[inputs0, inputs1, patch_size],

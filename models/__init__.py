@@ -47,6 +47,16 @@ def validate_model_configuration(args) -> None:
         raise ValueError(f"Unknown model {model_name!r}")
     model_class = names[model_name]
     backbone = str(getattr(args, "backbone", "generic_mil")).lower()
+    from utils.precision import validate_precision_configuration
+
+    validate_precision_configuration(args)
+    if (
+        str(getattr(args, "resolved_precision", "fp32")) != "fp32"
+        and not bool(getattr(model_class, "SUPPORTS_AMP", False))
+    ):
+        raise ValueError(
+            f"{model_name} has no validated AMP training path; use --precision fp32"
+        )
 
     supported = getattr(model_class, "SUPPORTED_BACKBONES", None)
     if supported:
@@ -62,6 +72,16 @@ def validate_model_configuration(args) -> None:
         if feature_dim != int(required_dim):
             raise ValueError(
                 f"{model_name} requires {int(required_dim)}-D patch features, "
+                f"got feature_dim={feature_dim}"
+            )
+
+    required_dims = getattr(model_class, "REQUIRED_FEATURE_DIMS", None)
+    if required_dims is not None and backbone in required_dims:
+        feature_dim = int(getattr(args, "feature_dim", required_dims[backbone]))
+        if feature_dim != int(required_dims[backbone]):
+            raise ValueError(
+                f"{model_name} with {backbone} requires "
+                f"{int(required_dims[backbone])}-D patch features, "
                 f"got feature_dim={feature_dim}"
             )
 

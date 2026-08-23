@@ -59,8 +59,9 @@ common:
   # Weight decay của AdamW.
   optim_wd: 1.0e-4
 
-  # Slide-level aggregator mặc định: generic_mil, titan hoặc feather.
-  # Đây không phải patch feature extractor; input vẫn là CONCH features [N,768].
+  # Slide-level aggregator mặc định: generic_mil, titan, feather hoặc gigapath.
+  # Đây không phải patch feature extractor. TITAN/FEATHER dùng raw bags
+  # [N,768]; GigaPath dùng raw bags [N,1536].
   # Không khai báo backbone_freeze nghĩa là full fine-tune slide aggregator;
   # thêm backbone_freeze: true nếu chỉ muốn train classifier 27 lớp.
   backbone: titan
@@ -110,6 +111,13 @@ backbones:
     backbone_revision: 423c894c738294e8b0ac38938108180a2c21dd43
 
     # 0 nghĩa là FEATHER dùng toàn bộ patch của mỗi WSI.
+    backbone_max_patches: 0
+
+  gigapath:
+    # Pinned release checkpoint for the 1536-D tile / 768-D slide encoder.
+    backbone_model_id: prov-gigapath/prov-gigapath
+    backbone_revision: 64f9e26c15019f2d4f6d9113c6822f88bb16b01b
+    feature_dim: 1536
     backbone_max_patches: 0
 
 methods:

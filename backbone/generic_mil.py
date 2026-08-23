@@ -260,7 +260,7 @@ def build_mil_backbone(args, num_classes: int) -> nn.Module:
 
     if name == "generic_mil":
         return GenericMILBackbone(**kwargs)
-    if name in {"titan", "feather"}:
+    if name in {"titan", "feather", "gigapath"}:
         from backbone.pretrained_mil import build_pretrained_backbone
 
         return build_pretrained_backbone(args, num_classes)

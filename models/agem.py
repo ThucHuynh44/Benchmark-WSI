@@ -22,6 +22,7 @@ def project(gxy: torch.Tensor, ger: torch.Tensor) -> torch.Tensor:
 
 
 class AGem(ContinualModel):
+    SUPPORTS_AMP = True
     NAME = 'agem'
     COMPATIBILITY = ['class-il', 'domain-il', 'task-il']
 
@@ -45,7 +46,12 @@ class AGem(ContinualModel):
             labels=labels.to(self.device),
         )
 
-    def _flat_grads(self):
+    def _flat_grads(self, *, unscale=False):
+        if unscale:
+            return torch.cat([
+                self.unscaled_gradient(parameter)
+                for parameter in self.net.parameters()
+            ])
         return torch.cat([
             parameter.grad.view(-1) if parameter.grad is not None else torch.zeros_like(parameter).view(-1)
             for parameter in self.net.parameters()
@@ -60,24 +66,24 @@ class AGem(ContinualModel):
 
     def observe(self, features, coords, patch_size, labels, task=None, ssl=False):
         self.opt.zero_grad()
-        logits = self.net([features, coords, patch_size])[0]
+        logits = self.forward_net([features, coords, patch_size])[0]
         loss = self.loss(logits, labels)
-        loss.backward()
+        self.backward_loss(loss)
 
         if not self.buffer.is_empty():
-            grad_xy = self._flat_grads().detach().clone()
+            grad_xy = self._flat_grads(unscale=True).detach().clone()
             buf_inputs, buf_labels = self.buffer.get_data()
             self.opt.zero_grad()
-            buf_logits = self.net(buf_inputs)[0]
+            buf_logits = self.forward_net(buf_inputs)[0]
             penalty = self.loss(buf_logits, buf_labels)
-            penalty.backward()
-            grad_er = self._flat_grads().detach().clone()
+            self.backward_loss(penalty)
+            grad_er = self._flat_grads(unscale=True).detach().clone()
             dot_prod = torch.dot(grad_xy, grad_er)
             if dot_prod.item() < 0:
                 denominator = torch.dot(grad_er, grad_er).clamp_min(1e-12)
                 grad_xy = grad_xy - (dot_prod / denominator) * grad_er
-            self._set_grads(grad_xy)
+            self._set_grads(self.gradient_for_scaled_step(grad_xy))
 
-        self.opt.step()
+        self.optimizer_step()
 
         return loss.item()

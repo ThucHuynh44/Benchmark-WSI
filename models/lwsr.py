@@ -3,7 +3,8 @@
 The immutable upstream core is kept under
 ``third_party/upstream/lwsr``.  Runtime code deliberately does not import that
 snapshot; this module adapts its pair, classification and distance-consistency
-objectives to variable-length 768-D TITAN/FEATHER bags.
+objectives to variable-length raw tile bags.  TITAN/FEATHER bags are 768-D;
+GigaPath bags are 1536-D and are aggregated to the same 768-D slide space.
 """
 
 from __future__ import annotations
@@ -38,9 +39,11 @@ class Lwsr(ContinualModel):
 
     NAME = "lwsr"
     COMPATIBILITY = ["class-il", "task-il"]
-    SUPPORTED_BACKBONES = ("titan", "feather")
+    SUPPORTED_BACKBONES = ("titan", "feather", "gigapath")
     REQUIRES_TRAINABLE_BACKBONE = True
-    REQUIRED_FEATURE_DIM = 768
+    REQUIRED_FEATURE_DIMS = {"titan": 768, "feather": 768, "gigapath": 1536}
+    SUPPORTS_AMP = True
+    SLIDE_EMBED_DIM = 768
     CHECKPOINT_VERSION = 1
 
     def __init__(self, backbone, loss, args, transform):
@@ -48,6 +51,7 @@ class Lwsr(ContinualModel):
         super().__init__(backbone, loss, args, transform)
 
         seed = getattr(args, "seed", 0)
+        self.input_feature_dim = int(args.feature_dim)
         self.num_classes = int(args.num_classes)
         self.minibatch_size = max(1, int(getattr(args, "minibatch_size", 4) or 4))
         self.bags_per_update = max(1, int(getattr(args, "bags_per_update", 4) or 4))
@@ -61,7 +65,7 @@ class Lwsr(ContinualModel):
             int(getattr(args, "buffer_size", 10)),
             max_patches=int(getattr(args, "buffer_max_patches", 400)),
             seed=0 if seed is None else int(seed),
-            feature_dim=768,
+            feature_dim=self.input_feature_dim,
         )
         self.current_task = 0
         self.previous_dist_matrix: Optional[torch.Tensor] = None
@@ -73,8 +77,11 @@ class Lwsr(ContinualModel):
             raise ValueError(
                 f"LWSR supports only {cls.SUPPORTED_BACKBONES}, got backbone={name!r}"
             )
-        if int(getattr(args, "feature_dim", 768)) != 768:
-            raise ValueError("LWSR requires 768-D TITAN/FEATHER patch features")
+        expected_dim = cls.REQUIRED_FEATURE_DIMS[name]
+        if int(getattr(args, "feature_dim", expected_dim)) != expected_dim:
+            raise ValueError(
+                f"LWSR with {name} requires {expected_dim}-D raw patch features"
+            )
         if bool(getattr(args, "backbone_freeze", False)):
             raise ValueError("LWSR requires a trainable slide backbone")
         if int(getattr(args, "num_classes", 0)) <= 0:
@@ -133,7 +140,8 @@ class Lwsr(ContinualModel):
         coords: torch.Tensor,
         patch_size: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        output = self.net.forward_with_embedding(features, coords, patch_size)
+        with self.autocast_context():
+            output = self.net.forward_with_embedding(features, coords, patch_size)
         if not isinstance(output, dict):
             raise TypeError("forward_with_embedding must return a dictionary")
         logits = output.get("logits")
@@ -148,8 +156,11 @@ class Lwsr(ContinualModel):
             raise ValueError(
                 f"LWSR expects logits [1,{self.num_classes}], got {tuple(logits.shape)}"
             )
-        if embedding.ndim != 2 or embedding.shape[0] != 1:
-            raise ValueError(f"LWSR expects one slide embedding, got {tuple(embedding.shape)}")
+        if embedding.shape != (1, self.SLIDE_EMBED_DIM):
+            raise ValueError(
+                f"LWSR expects slide embedding [1,{self.SLIDE_EMBED_DIM}], "
+                f"got {tuple(embedding.shape)}"
+            )
         if not torch.isfinite(logits).all() or not torch.isfinite(embedding).all():
             raise FloatingPointError("LWSR backbone returned non-finite values")
         return logits, embedding
@@ -162,7 +173,9 @@ class Lwsr(ContinualModel):
         embeddings: List[torch.Tensor] = []
         labels: List[torch.Tensor] = []
         for raw_batch in batches:
-            features, coords, patch_size, label = unpack_prepared_batch(raw_batch)
+            features, coords, patch_size, label = unpack_prepared_batch(
+                raw_batch, feature_dim=self.input_feature_dim
+            )
             batch_logits, batch_embedding = self._forward_embedding(
                 features, coords, patch_size
             )
@@ -218,8 +231,8 @@ class Lwsr(ContinualModel):
         )
         if not torch.isfinite(loss):
             raise FloatingPointError("LWSR produced a non-finite loss")
-        loss.backward()
-        self.opt.step()
+        self.backward_loss(loss)
+        self.optimizer_step()
 
         return {
             "loss": float(loss.detach().cpu()),
@@ -285,7 +298,7 @@ class Lwsr(ContinualModel):
             "version": self.CHECKPOINT_VERSION,
             "method": self.NAME,
             "backbone": str(getattr(self.args, "backbone", "")).lower(),
-            "feature_dim": 768,
+            "feature_dim": self.input_feature_dim,
             "current_task": self.current_task,
             "config": self._checkpoint_config(),
             "buffer": self.buffer.state_dict(),
@@ -303,7 +316,7 @@ class Lwsr(ContinualModel):
             "version": self.CHECKPOINT_VERSION,
             "method": self.NAME,
             "backbone": str(getattr(self.args, "backbone", "")).lower(),
-            "feature_dim": 768,
+            "feature_dim": self.input_feature_dim,
         }
         for key, value in expected.items():
             if strict and state.get(key) != value:

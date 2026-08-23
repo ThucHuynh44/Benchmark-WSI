@@ -14,9 +14,9 @@ from utils.training import checkpoint_payload, load_checkpoint
 class FakeEmbeddingBackbone(torch.nn.Module):
     supports_ssl = False
 
-    def __init__(self, num_classes=6, embedding_dim=8):
+    def __init__(self, num_classes=6, input_dim=768, embedding_dim=768):
         super().__init__()
-        self.encoder = torch.nn.Linear(768, embedding_dim)
+        self.encoder = torch.nn.Linear(input_dim, embedding_dim)
         self.classifier = torch.nn.Linear(embedding_dim, num_classes)
 
     def forward_with_embedding(self, features, coords, patch_size_level0):
@@ -79,11 +79,19 @@ def method_args(**overrides):
     return SimpleNamespace(**values)
 
 
-def make_bag(label, patch_count=7, value=None, device=torch.device("cpu")):
+def make_bag(
+    label,
+    patch_count=7,
+    value=None,
+    device=torch.device("cpu"),
+    feature_dim=768,
+):
     if value is None:
-        features = torch.randn(patch_count, 768, device=device)
+        features = torch.randn(patch_count, feature_dim, device=device)
     else:
-        features = torch.full((patch_count, 768), float(value), device=device)
+        features = torch.full(
+            (patch_count, feature_dim), float(value), device=device
+        )
     coords = torch.arange(patch_count * 2, device=device).reshape(patch_count, 2)
     return features, coords, torch.tensor(1024, device=device), torch.tensor([label], device=device)
 
@@ -91,7 +99,7 @@ def make_bag(label, patch_count=7, value=None, device=torch.device("cpu")):
 def build(method, args):
     torch.manual_seed(3)
     model = method(
-        FakeEmbeddingBackbone(args.num_classes),
+        FakeEmbeddingBackbone(args.num_classes, input_dim=args.feature_dim),
         torch.nn.functional.cross_entropy,
         args,
         None,
@@ -323,6 +331,55 @@ class MicilTests(unittest.TestCase):
         ):
             with self.subTest(override=override), self.assertRaises(ValueError):
                 build(Micil, method_args(**override))
+
+
+class GigaPathInputDimensionTests(unittest.TestCase):
+    def test_lwsr_uses_1536_raw_replay_and_768_slide_embeddings(self):
+        # This CPU-only synthetic adapter bypasses CLI validation and exercises
+        # dimensions only; real GigaPath runs reject FP32 before construction.
+        args = method_args(
+            backbone="gigapath", feature_dim=1536, precision="fp32"
+        )
+        model = build(Lwsr, args)
+        bag0 = make_bag(0, feature_dim=1536, device=model.device)
+        bag1 = make_bag(2, feature_dim=1536, device=model.device)
+        model.observe_many([bag0], task=0)
+        model.save_buffer(*bag0, task=0)
+        model.end_task()
+        metrics = model.observe_many([bag1], task=1)
+        self.assertTrue(torch.isfinite(torch.tensor(metrics["loss"])))
+        self.assertEqual(model.buffer.feature_dim, 1536)
+        self.assertEqual(model.net.classifier.in_features, 768)
+        self.assertEqual(model.get_checkpoint_state()["feature_dim"], 1536)
+
+        restored = build(Lwsr, args)
+        restored.load_checkpoint_state(model.get_checkpoint_state())
+        self.assertEqual(restored.buffer.feature_dim, 1536)
+
+    def test_micil_uses_1536_raw_replay_and_768_slide_embeddings(self):
+        args = method_args(
+            backbone="gigapath",
+            feature_dim=1536,
+            micil_replay=True,
+            precision="fp32",
+        )
+        model = build(Micil, args)
+        model.begin_task(FakeTaskDataset(0, [0, 1]))
+        bag0 = make_bag(0, feature_dim=1536, device=model.device)
+        model.observe_many([bag0], task=0)
+        model.save_buffer(*bag0, task=0)
+        model.end_task()
+        model.begin_task(FakeTaskDataset(1, [2, 3]))
+        bag1 = make_bag(2, feature_dim=1536, device=model.device)
+        metrics = model.observe_many([bag1], task=1)
+        self.assertTrue(torch.isfinite(torch.tensor(metrics["loss"])))
+        self.assertEqual(model.buffer.feature_dim, 1536)
+        self.assertEqual(model.net.classifier.in_features, 768)
+        self.assertEqual(model.get_checkpoint_state()["feature_dim"], 1536)
+
+        restored = build(Micil, args)
+        restored.load_checkpoint_state(model.get_checkpoint_state())
+        self.assertEqual(restored.buffer.feature_dim, 1536)
 
 
 if __name__ == "__main__":

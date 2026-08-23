@@ -69,7 +69,14 @@ def add_experiment_args(parser: ArgumentParser) -> None:
     )
 
     parser.add_argument('--backbone', type=str, default='generic_mil',
-                        help="MIL backbone: generic_mil, titan, feather, or '<module>:<ClassName>'.")
+                        help="MIL backbone: generic_mil, titan, feather, gigapath, or '<module>:<ClassName>'.")
+    parser.add_argument(
+        '--precision', choices=('auto', 'fp32', 'fp16', 'bf16'), default='auto',
+        help=(
+            'Compute precision policy. auto keeps existing backbones in FP32 '
+            'and selects FP16 for GigaPath.'
+        ),
+    )
     parser.add_argument('--feature_dim', type=int, default=768,
                         help='Patch feature dimension stored in the HDF5 file.')
     parser.add_argument('--backbone_hidden_dim', type=int, default=384,
