@@ -223,6 +223,21 @@ def _markdown(registry: Dict[str, Any], summaries: Sequence[dict]) -> str:
         "Attention-weight pilot",
         ["atlas_ce", "att_w025", "att_w05", "add_attention"],
     ))
+    lines.extend(table(
+        "ATLAS-Pruned candidates",
+        [
+            "pruned_safe", "pruned_no_solm", "pruned_core",
+            "pruned_core_realign", "atlas_pr_minimal",
+            "pruned_att025", "pruned_minimal",
+        ],
+    ))
+    lines.extend(table(
+        "Replay × LoRA factorial",
+        [
+            "pruned_neither", "pruned_lora_only",
+            "pruned_replay_only", "pruned_core",
+        ],
+    ))
     for axis, members in registry["axis_members"].items():
         lines.extend(table(f"Sweep: {axis}", [member["variant_id"] for member in members]))
     return "\n".join(lines)

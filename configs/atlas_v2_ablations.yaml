@@ -1,0 +1,142 @@
+defaults:
+  config: configs/methods.yaml
+  backbone: feather
+  result_root: ablations/atlas_v2
+  expected_variants: 8
+
+variants:
+  atlasv2_base_frozen:
+    id: atlasv2_base_frozen
+    group: additive_ladder
+    model: atlas_v2
+    label: Frozen FEATHER + linear CE
+    factor: base
+    value: frozen
+    overrides: &base_frozen
+      buffer_size: 0
+      atlasv2_lora: false
+      atlasv2_replay: false
+      atlasv2_prototype: false
+      atlasv2_realign: false
+      atlasv2_prompt: false
+      atlasv2_nce: false
+      atlasv2_train_classifier: true
+
+  atlasv2_base_lora:
+    id: atlasv2_base_lora
+    group: additive_ladder
+    model: atlas_v2
+    label: Standard LoRA + linear CE
+    factor: lora
+    value: true
+    overrides: &base_lora
+      buffer_size: 0
+      atlasv2_lora: true
+      atlasv2_replay: false
+      atlasv2_prototype: false
+      atlasv2_realign: false
+      atlasv2_prompt: false
+      atlasv2_nce: false
+      atlasv2_train_classifier: true
+
+  atlasv2_lora_replay:
+    id: atlasv2_lora_replay
+    group: additive_ladder
+    model: atlas_v2
+    label: Standard LoRA + full-bag replay
+    factor: replay
+    value: true
+    overrides: &lora_replay
+      buffer_size: 30
+      atlasv2_lora: true
+      atlasv2_replay: true
+      atlasv2_prototype: false
+      atlasv2_realign: false
+      atlasv2_prompt: false
+      atlasv2_nce: false
+      atlasv2_train_classifier: true
+
+  atlasv2_lora_replay_proto:
+    id: atlasv2_lora_replay_proto
+    group: additive_ladder
+    model: atlas_v2
+    label: Standard LoRA + replay + stale prototypes
+    factor: prototype
+    value: true
+    overrides: &lora_replay_proto
+      buffer_size: 30
+      atlasv2_lora: true
+      atlasv2_replay: true
+      atlasv2_prototype: true
+      atlasv2_realign: false
+      atlasv2_prompt: false
+      atlasv2_nce: false
+      atlasv2_train_classifier: true
+
+  atlasv2_lora_replay_proto_realign:
+    id: atlasv2_lora_replay_proto_realign
+    group: additive_ladder
+    model: atlas_v2
+    label: Standard LoRA + replay + realigned prototypes
+    factor: realign
+    value: true
+    overrides: &realigned_core
+      buffer_size: 30
+      atlasv2_lora: true
+      atlasv2_replay: true
+      atlasv2_prototype: true
+      atlasv2_realign: true
+      atlasv2_prompt: false
+      atlasv2_nce: false
+      atlasv2_train_classifier: true
+
+  atlasv2_frozen_proto:
+    id: atlasv2_frozen_proto
+    group: frozen_baseline
+    model: atlas_v2
+    label: Frozen FEATHER continual NCM
+    factor: classifier
+    value: prototype
+    overrides:
+      buffer_size: 0
+      atlasv2_lora: false
+      atlasv2_replay: false
+      atlasv2_prototype: true
+      atlasv2_realign: false
+      atlasv2_prompt: false
+      atlasv2_nce: false
+      atlasv2_train_classifier: false
+
+  atlasv2_lora_replay_proto_realign_prompt:
+    id: atlasv2_lora_replay_proto_realign_prompt
+    group: semantic_extension
+    model: atlas_v2
+    label: Realigned core + semantic prompt branch
+    factor: prompt
+    value: true
+    overrides:
+      buffer_size: 30
+      atlasv2_lora: true
+      atlasv2_replay: true
+      atlasv2_prototype: true
+      atlasv2_realign: true
+      atlasv2_prompt: true
+      atlasv2_nce: false
+      atlasv2_train_classifier: true
+
+  atlasv2_lora_replay_proto_realign_prompt_nce:
+    id: atlasv2_lora_replay_proto_realign_prompt_nce
+    group: semantic_extension
+    model: atlas_v2
+    label: Realigned prompt core + semantic NCE
+    factor: nce
+    value: true
+    overrides:
+      buffer_size: 30
+      atlasv2_lora: true
+      atlasv2_replay: true
+      atlasv2_prototype: true
+      atlasv2_realign: true
+      atlasv2_prompt: true
+      atlasv2_nce: true
+      atlasv2_train_classifier: true

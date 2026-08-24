@@ -84,6 +84,15 @@ def get_parser() -> ArgumentParser:
         default=False,
         help="Record task-boundary latent geometry and drift diagnostics.",
     )
+    parser.add_argument(
+        "--atlas_prototype_realign",
+        action=BooleanOptionalAction,
+        default=False,
+        help=(
+            "After each LoRA merge, replace old-class centroids with embeddings "
+            "recomputed from retained memory exemplars."
+        ),
+    )
     return parser
 
 
@@ -101,6 +110,12 @@ def validate_args(args) -> None:
         raise ValueError("ATLAS-MIL requires backbone_max_patches=0 for full-bag attention")
 
     replay_enabled = bool(getattr(args, "atlas_replay", True))
+    lora_enabled = bool(getattr(args, "atlas_lora_enabled", True))
+    prototype_realign = bool(getattr(args, "atlas_prototype_realign", False))
+    if prototype_realign and not replay_enabled:
+        raise ValueError("ATLAS prototype realignment requires replay memory")
+    if prototype_realign and not lora_enabled:
+        raise ValueError("ATLAS prototype realignment requires LoRA")
     for name, default in {
         "minibatch_size": 1,
         "bags_per_update": 1,
@@ -336,6 +351,19 @@ class AtlasNetwork(nn.Module):
         self.atlas_valid[label] = True
         self.atlas_finalized[label] = True
 
+    @torch.no_grad()
+    def realign_centroid(self, label: int, embeddings: torch.Tensor) -> None:
+        """Replace one finalized centroid without changing its stored geometry."""
+        label = int(label)
+        values = torch.as_tensor(embeddings, dtype=torch.float32).reshape(
+            -1, self.embedding_dim
+        )
+        if values.shape[0] == 0 or not torch.isfinite(values).all():
+            raise ValueError("ATLAS cannot realign a centroid from empty/non-finite data")
+        if not bool(self.atlas_finalized[label]):
+            raise RuntimeError(f"ATLAS cannot realign non-finalized class {label}")
+        self.atlas_centroids[label].copy_(values.mean(dim=0).to(self.atlas_centroids))
+
 
 class AtlasMil(ContinualModel):
     NAME = "atlas_mil"
@@ -408,6 +436,9 @@ class AtlasMil(ContinualModel):
         self._validate_task_layout()
         self.replay_enabled = bool(getattr(args, "atlas_replay", True))
         self.diagnostics_enabled = bool(getattr(args, "atlas_diagnostics", False))
+        self.prototype_realign_enabled = bool(
+            getattr(args, "atlas_prototype_realign", False)
+        )
         if self.replay_enabled and int(args.buffer_size) < self.num_classes:
             raise ValueError(
                 "ATLAS-MIL buffer_size must be at least num_classes so every seen "
@@ -807,11 +838,15 @@ class AtlasMil(ContinualModel):
         targets = []
         embedding_drifts: List[float] = []
         attention_drifts: List[float] = []
+        old_embeddings: Dict[int, List[torch.Tensor]] = defaultdict(list)
         with torch.no_grad():
             for entry in self.memory.all(self.device, require_targets=False):
                 output = self.net.forward_with_embedding(
                     entry.features, entry.coords, entry.patch_size
                 )
+                label = int(entry.label.reshape(-1)[0])
+                if self.prototype_realign_enabled and label < self.old_class_count:
+                    old_embeddings[label].append(output["embedding"].detach().cpu())
                 targets.append(
                     (
                         output["attention"].detach().cpu().clone(),
@@ -828,6 +863,8 @@ class AtlasMil(ContinualModel):
                     attention_drifts.append(float(self.attention_distillation_loss(
                         output["attention"], entry.target_attention
                     ).cpu()))
+        if self.prototype_realign_enabled:
+            self._realign_old_centroids(old_embeddings)
         count = len(embedding_drifts)
         return (
             targets,
@@ -835,6 +872,19 @@ class AtlasMil(ContinualModel):
             float(sum(attention_drifts) / count) if count else math.nan,
             count,
         )
+
+    def _realign_old_centroids(
+        self, embeddings: Mapping[int, Sequence[torch.Tensor]]
+    ) -> None:
+        """Realign every old prototype from the current model's retained exemplars."""
+        for label in range(self.old_class_count):
+            values = list(embeddings.get(label, ()))
+            if not values:
+                raise RuntimeError(
+                    "ATLAS prototype realignment is missing a retained exemplar "
+                    f"for old class {label}"
+                )
+            self.net.realign_centroid(label, torch.cat(values, dim=0))
 
     @staticmethod
     def _subspace_overlap(
@@ -1026,6 +1076,10 @@ class AtlasMil(ContinualModel):
         # discriminator because True was the behavior before this flag existed.
         if not self.lora_enabled:
             config["lora_enabled"] = False
+        # Preserve historical checkpoint metadata and hashes when the new
+        # opt-in realignment mechanism is disabled.
+        if self.prototype_realign_enabled:
+            config["prototype_realign"] = True
         return config
 
     def get_run_metadata(self) -> Dict[str, Any]:

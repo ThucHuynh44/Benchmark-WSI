@@ -121,6 +121,29 @@ backbones:
     backbone_max_patches: 0
 
 methods:
+  atlas_v2:
+    # Clean FEATHER additive ladder. Individual mechanisms are selected only by
+    # configs/atlas_v2_ablations.yaml; the method defaults to A0.
+    buffer_size: 30
+    minibatch_size: 1
+    bags_per_update: 1
+    atlasv2_lora: false
+    atlasv2_replay: false
+    atlasv2_prototype: false
+    atlasv2_realign: false
+    atlasv2_prompt: false
+    atlasv2_nce: false
+    atlasv2_train_classifier: true
+    atlasv2_lora_rank: 8
+    atlasv2_lora_alpha: 8.0
+    atlasv2_lora_merge_scale: 1.0
+    atlasv2_prompt_fusion: 0.5
+    atlasv2_prompt_ce_weight: 1.0
+    atlasv2_nce_temperature: 0.07
+    atlasv2_nce_weight: 1.0
+    atlasv2_text_model_id: MahmoodLab/TITAN
+    atlasv2_text_revision: dac6773d9961cfc75503440676ff157a2c6e8d2e
+
   atlas_mil:
     # Full-bag genuine attention; run the primary method with --backbone feather.
     atlas_replay: true

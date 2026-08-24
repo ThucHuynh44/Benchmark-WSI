@@ -22,14 +22,19 @@ REGISTRY = ROOT / "configs/atlas_mil_ablations.yaml"
 class AtlasAblationRegistryTests(unittest.TestCase):
     PRESERVED_HASHES = {
         "full": "fca85b9fa283f85567c42726375f4ff2c88213dea80814e6eb480368635ac4ec",
+        "full_no_lora": "c3a51d7849fe24f72829b0765482501c4a67ed36a60adb5d9d9bded573fea940",
         "atlas_ce": "d942c2866a1696cae98bee6ae12dcbe93837dc41b2fba0f9b599ef5e7d10d689",
         "add_attention": "8678cd391fea1e5811addf6f0230ebfb3e0721db7947f73c7b7524a2ef03637c",
+        "att_w025": "34746bb0dec4bd6c9b05ae38f5d7a3f730a57bb96a73dd660e3cdd5ab62ff597",
+        "att_w05": "213317fdba31dcdab846088f2de20d8c52dd5e6062ee9d7b86c86002d2b7a78d",
         "add_nce": "5b5f98bb1d69490b6e18c5ffe3ca6369e9db34127fb76063a1d9b4cbe803f659",
         "add_reconstruction": "ea7167607792515e07724b0d1a1f50d0b1a47d8330382ffc44fb6af7ad064b1c",
         "solm_none": "b3404d5891b06ca14fc35b2685355eee5d55b49fdffb7eb7f0bf3e91dfef71ce",
         "solm_hard": "6b2411cc9d5746216ffd0959c2bcfda17d29dea54184e1bad354cdbcb04783d2",
         "wo_replay": "5d5cc02361fffd64b2259cfe8de463ef201725460ea66688ddc4bd92a69641d2",
         "wo_nce": "5426758d9ab8640d9780ac205e1cbdf4ebec23ce07edbae2c14c3bccf7fecc89",
+        "wo_reconstruction": "95e5c930d23285d33154e2693201da02f1416aa10fa9f7b6b040206201d1a7d4",
+        "wo_manifold": "1e97a8e4b9fbb8a3c534ccf2290bb3859e357aa8813559d3cc230ac0e02d751a",
         "wo_attention": "775f4aa00cd59be6097630ec2ab5ebba7eba121a574303528458cca0e177305a",
         "prompt_only": "62a6c415b1b67de50e7a855df4beaa98876eb9799cc4ff75ab4d2f3ae55852cd",
         "centroid_with_prompt_fallback": "1beaef972b19c9df2103abdebb6dfe6ab06496694ae8c45cd0be7958579dbfef",
@@ -42,11 +47,15 @@ class AtlasAblationRegistryTests(unittest.TestCase):
             config_to_argv({"atlas_lora_enabled": False}),
             ["--no-atlas_lora_enabled"],
         )
+        self.assertEqual(
+            config_to_argv({"atlas_prototype_realign": True}),
+            ["--atlas_prototype_realign"],
+        )
 
     def test_registry_resolves_exact_unique_matrix(self):
         registry = load_registry(REGISTRY)
         variants = registry["variants"]
-        self.assertEqual(len(variants), 34)
+        self.assertEqual(len(variants), 44)
         self.assertEqual(variants["sgd_ft"]["group"], "external_reference")
         self.assertNotEqual(variants["sgd_ft"]["group"], "additive")
         self.assertFalse(variants["atlas_ce_noreplay"]["overrides"]["atlas_replay"])
@@ -55,7 +64,7 @@ class AtlasAblationRegistryTests(unittest.TestCase):
             0.0,
         )
         hashes = {entry["config_hash"] for entry in variants.values()}
-        self.assertEqual(len(hashes), 34)
+        self.assertEqual(len(hashes), 44)
         self.assertFalse(variants["full_no_lora"]["overrides"]["atlas_lora_enabled"])
         self.assertNotIn("atlas_lora_enabled", variants["full"]["overrides"])
         for variant_id, expected_hash in self.PRESERVED_HASHES.items():
@@ -96,6 +105,91 @@ class AtlasAblationRegistryTests(unittest.TestCase):
         self.assertTrue(all(
             value == normalized["atlas_ce"] for value in normalized.values()
         ))
+
+    def test_pruned_candidates_resolve_and_pairwise_comparisons_are_isolated(self):
+        registry = load_registry(REGISTRY)
+        variants = registry["variants"]
+        candidate_ids = (
+            "pruned_safe", "pruned_no_solm", "pruned_core", "pruned_att025",
+            "pruned_minimal", "pruned_lora_only", "pruned_replay_only",
+            "pruned_neither", "pruned_core_realign", "atlas_pr_minimal",
+        )
+        for variant_id in candidate_ids:
+            overrides = variants[variant_id]["overrides"]
+            self.assertEqual(overrides["atlas_prompt_weight"], 0.0)
+            self.assertEqual(overrides["manifold_weight"], 0.0)
+
+        comparisons = (
+            ("pruned_safe", "pruned_no_solm", "atlas_lora_mode", "semantic", "none"),
+            ("pruned_no_solm", "pruned_core", "reconstruction_weight", 1.0, 0.0),
+            ("pruned_core", "pruned_att025", "attention_weight", 0.0, 0.25),
+            ("pruned_core", "pruned_minimal", "atlas_nce_weight", 1.0, 0.0),
+        )
+        for left_id, right_id, field, left_value, right_value in comparisons:
+            left = dict(variants[left_id]["overrides"])
+            right = dict(variants[right_id]["overrides"])
+            self.assertEqual(left.pop(field), left_value)
+            self.assertEqual(right.pop(field), right_value)
+            self.assertEqual(left, right)
+
+        core = dict(variants["pruned_core"]["overrides"])
+        realigned = dict(variants["pruned_core_realign"]["overrides"])
+        self.assertNotIn("atlas_prototype_realign", core)
+        self.assertTrue(realigned.pop("atlas_prototype_realign"))
+        self.assertEqual(core, realigned)
+        command = build_command(registry, variants["pruned_core_realign"], 0)
+        self.assertIn("--atlas_prototype_realign", command)
+
+        realigned_core = dict(variants["pruned_core_realign"]["overrides"])
+        minimal = dict(variants["atlas_pr_minimal"]["overrides"])
+        self.assertEqual(realigned_core.pop("atlas_nce_weight"), 1.0)
+        self.assertEqual(minimal.pop("atlas_nce_weight"), 0.0)
+        self.assertEqual(realigned_core, minimal)
+        self.assertTrue(minimal["atlas_prototype_realign"])
+
+        pruned_minimal = dict(variants["pruned_minimal"]["overrides"])
+        minimal = dict(variants["atlas_pr_minimal"]["overrides"])
+        self.assertNotIn("atlas_prototype_realign", pruned_minimal)
+        self.assertTrue(minimal.pop("atlas_prototype_realign"))
+        self.assertEqual(pruned_minimal, minimal)
+
+    def test_pruned_replay_lora_factorial_is_clean_and_boolean_safe(self):
+        registry = load_registry(REGISTRY)
+        variants = registry["variants"]
+        cells = {
+            "pruned_neither": (False, False),
+            "pruned_lora_only": (False, True),
+            "pruned_replay_only": (True, False),
+            "pruned_core": (True, True),
+        }
+        normalized = {}
+        for variant_id, (replay, lora) in cells.items():
+            overrides = dict(variants[variant_id]["overrides"])
+            self.assertEqual(overrides.pop("atlas_replay"), replay)
+            self.assertEqual(overrides.pop("atlas_lora_enabled"), lora)
+            self.assertEqual(overrides["atlas_lora_mode"], "none")
+            self.assertEqual(overrides["atlas_nce_weight"], 1.0)
+            self.assertEqual(overrides["reconstruction_weight"], 0.0)
+            self.assertEqual(overrides["attention_weight"], 0.0)
+            normalized[variant_id] = overrides
+        self.assertTrue(all(
+            value == normalized["pruned_core"] for value in normalized.values()
+        ))
+
+        lora_only = build_command(registry, variants["pruned_lora_only"], 0)
+        self.assertIn("--no-atlas_replay", lora_only)
+        self.assertIn("--atlas_lora_enabled", lora_only)
+        self.assertIn("--atlas_lora_mode", lora_only)
+        self.assertNotIn("--no-atlas_lora_enabled", lora_only)
+
+        for variant_id in ("pruned_replay_only", "pruned_neither"):
+            command = build_command(registry, variants[variant_id], 0)
+            self.assertIn("--no-atlas_lora_enabled", command)
+            mode_index = command.index("--atlas_lora_mode")
+            self.assertEqual(command[mode_index + 1], "none")
+        replay_only = build_command(registry, variants["pruned_replay_only"], 0)
+        self.assertIn("--atlas_replay", replay_only)
+        self.assertNotIn("--no-atlas_replay", replay_only)
 
     def test_resume_audit_detects_complete_and_hash_mismatch(self):
         registry = load_registry(REGISTRY)
@@ -166,7 +260,7 @@ class AtlasAblationSummaryTests(unittest.TestCase):
         self.assertAlmostEqual(overall["semantic_rho_mean"], 0.5)
         self.assertEqual(overall["fold_count"], 2)
 
-    def test_markdown_contains_architecture_and_ordered_attention_pilot(self):
+    def test_markdown_contains_ordered_architecture_sections(self):
         registry = load_registry(REGISTRY)
         rows = []
         for variant in registry["variants"].values():
@@ -181,6 +275,22 @@ class AtlasAblationSummaryTests(unittest.TestCase):
         positions = [
             pilot.index(f"| {variant_id} |")
             for variant_id in ("atlas_ce", "att_w025", "att_w05", "add_attention")
+        ]
+        self.assertEqual(positions, sorted(positions))
+        pruned = rendered.split("## ATLAS-Pruned candidates", 1)[1].split("## ", 1)[0]
+        pruned_ids = (
+            "pruned_safe", "pruned_no_solm", "pruned_core",
+            "pruned_core_realign", "atlas_pr_minimal",
+            "pruned_att025", "pruned_minimal",
+        )
+        positions = [pruned.index(f"| {variant_id} |") for variant_id in pruned_ids]
+        self.assertEqual(positions, sorted(positions))
+        factorial = rendered.split("## Replay × LoRA factorial", 1)[1].split("## ", 1)[0]
+        factorial_ids = (
+            "pruned_neither", "pruned_lora_only", "pruned_replay_only", "pruned_core",
+        )
+        positions = [
+            factorial.index(f"| {variant_id} |") for variant_id in factorial_ids
         ]
         self.assertEqual(positions, sorted(positions))
 

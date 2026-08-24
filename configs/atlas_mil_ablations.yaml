@@ -3,7 +3,7 @@ defaults:
   backbone: feather
   folds: all
   result_root: ablations/atlas_mil
-  expected_variants: 34
+  expected_variants: 44
   atlas_overrides:
     atlas_replay: true
     atlas_diagnostics: true
@@ -214,6 +214,171 @@ variants:
     factor: atlas_prompt_weight
     value: 0.0
     overrides:
+      atlas_prompt_weight: 0.0
+
+  # Compact architecture-selection family derived from the completed ablations.
+  # These candidates are not permanently restricted to the initial three-fold pilot.
+  pruned_safe:
+    id: pruned_safe
+    group: pruned_architecture
+    model: atlas_mil
+    label: Pruned safe (semantic SOLM)
+    factor: pruned_candidate
+    value: safe
+    overrides:
+      atlas_replay: true
+      atlas_lora_enabled: true
+      atlas_nce_weight: 1.0
+      reconstruction_weight: 1.0
+      attention_weight: 0.0
+      manifold_weight: 0.0
+      atlas_lora_mode: semantic
+      atlas_prompt_weight: 0.0
+  pruned_no_solm:
+    id: pruned_no_solm
+    group: pruned_architecture
+    model: atlas_mil
+    label: Pruned without SOLM
+    factor: pruned_candidate
+    value: no_solm
+    overrides:
+      atlas_replay: true
+      atlas_lora_enabled: true
+      atlas_nce_weight: 1.0
+      reconstruction_weight: 1.0
+      attention_weight: 0.0
+      manifold_weight: 0.0
+      atlas_lora_mode: none
+      atlas_prompt_weight: 0.0
+  pruned_core:
+    id: pruned_core
+    group: pruned_architecture
+    model: atlas_mil
+    label: Pruned core
+    factor: pruned_candidate
+    value: core
+    overrides:
+      atlas_replay: true
+      atlas_lora_enabled: true
+      atlas_nce_weight: 1.0
+      reconstruction_weight: 0.0
+      attention_weight: 0.0
+      manifold_weight: 0.0
+      atlas_lora_mode: none
+      atlas_prompt_weight: 0.0
+  pruned_core_realign:
+    id: pruned_core_realign
+    group: pruned_architecture
+    model: atlas_mil
+    label: Pruned core with prototype realignment
+    factor: prototype_realign
+    value: true
+    overrides:
+      atlas_replay: true
+      atlas_lora_enabled: true
+      atlas_nce_weight: 1.0
+      reconstruction_weight: 0.0
+      attention_weight: 0.0
+      manifold_weight: 0.0
+      atlas_lora_mode: none
+      atlas_prompt_weight: 0.0
+      atlas_prototype_realign: true
+  atlas_pr_minimal:
+    id: atlas_pr_minimal
+    group: pruned_architecture
+    model: atlas_mil
+    label: ATLAS-PR-Minimal
+    factor: pruned_candidate
+    value: prototype_realign_minimal
+    overrides:
+      atlas_replay: true
+      atlas_lora_enabled: true
+      atlas_nce_weight: 0.0
+      reconstruction_weight: 0.0
+      attention_weight: 0.0
+      manifold_weight: 0.0
+      atlas_lora_mode: none
+      atlas_prompt_weight: 0.0
+      atlas_prototype_realign: true
+  pruned_att025:
+    id: pruned_att025
+    group: pruned_architecture
+    model: atlas_mil
+    label: Pruned core with Attention KD 0.25
+    factor: pruned_candidate
+    value: attention_0p25
+    overrides:
+      atlas_replay: true
+      atlas_lora_enabled: true
+      atlas_nce_weight: 1.0
+      reconstruction_weight: 0.0
+      attention_weight: 0.25
+      manifold_weight: 0.0
+      atlas_lora_mode: none
+      atlas_prompt_weight: 0.0
+  pruned_minimal:
+    id: pruned_minimal
+    group: pruned_architecture
+    model: atlas_mil
+    label: Pruned minimal without NCE
+    factor: pruned_candidate
+    value: no_nce
+    overrides:
+      atlas_replay: true
+      atlas_lora_enabled: true
+      atlas_nce_weight: 0.0
+      reconstruction_weight: 0.0
+      attention_weight: 0.0
+      manifold_weight: 0.0
+      atlas_lora_mode: none
+      atlas_prompt_weight: 0.0
+  pruned_lora_only:
+    id: pruned_lora_only
+    group: pruned_replay_lora
+    model: atlas_mil
+    label: Pruned factorial (Replay OFF, LoRA ON)
+    factor: replay_lora_cell
+    value: replay_off_lora_on
+    overrides:
+      atlas_replay: false
+      atlas_lora_enabled: true
+      atlas_nce_weight: 1.0
+      reconstruction_weight: 0.0
+      attention_weight: 0.0
+      manifold_weight: 0.0
+      atlas_lora_mode: none
+      atlas_prompt_weight: 0.0
+  pruned_replay_only:
+    id: pruned_replay_only
+    group: pruned_replay_lora
+    model: atlas_mil
+    label: Pruned factorial (Replay ON, LoRA OFF)
+    factor: replay_lora_cell
+    value: replay_on_lora_off
+    overrides:
+      atlas_replay: true
+      atlas_lora_enabled: false
+      atlas_nce_weight: 1.0
+      reconstruction_weight: 0.0
+      attention_weight: 0.0
+      manifold_weight: 0.0
+      atlas_lora_mode: none
+      atlas_prompt_weight: 0.0
+  pruned_neither:
+    id: pruned_neither
+    group: pruned_replay_lora
+    model: atlas_mil
+    label: Pruned factorial (Replay OFF, LoRA OFF)
+    factor: replay_lora_cell
+    value: replay_off_lora_off
+    overrides:
+      atlas_replay: false
+      atlas_lora_enabled: false
+      atlas_nce_weight: 1.0
+      reconstruction_weight: 0.0
+      attention_weight: 0.0
+      manifold_weight: 0.0
+      atlas_lora_mode: none
       atlas_prompt_weight: 0.0
 
 axes:

@@ -402,6 +402,38 @@ The custom class may accept `forward(features)`, `forward(features, coords)`,
 or `forward(features, coords, patch_size_level0)` and return a logits tensor, a
 dictionary with `logits`, or ConSlide's five-item output tuple.
 
+## ATLAS-v2 additive ladder
+
+ATLAS-v2 is independent of the historical `atlas_mil` implementation and
+registry. Its eight settings are declared in
+`configs/atlas_v2_ablations.yaml`. Replay settings retain at most 30 selected
+WSIs total and store every selected WSI's complete pre-extracted feature bag;
+there is no patch selection, teacher target, attention KD, reconstruction,
+manifold loss, or SOLM projection.
+
+Validate the six-setting, three-fold Phase-1 pilot without launching jobs:
+
+```bash
+python scripts/run_atlas_v2_ablations.py dry-run \
+  --variants \
+    atlasv2_base_frozen \
+    atlasv2_base_lora \
+    atlasv2_lora_replay \
+    atlasv2_lora_replay_proto \
+    atlasv2_lora_replay_proto_realign \
+    atlasv2_frozen_proto \
+  --folds 0,1,2 \
+  --gpus 0
+```
+
+Replace `dry-run` with `run` to launch those 18 fold-runs. Prompt and NCE are
+implemented as Phase-2 settings but are deliberately excluded from this pilot.
+Generate the non-ranking summary with:
+
+```bash
+python scripts/summarize_atlas_v2_ablations.py
+```
+
 ## Updates / TODOs
 Please follow this GitHub for more updates.
 

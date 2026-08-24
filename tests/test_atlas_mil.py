@@ -99,6 +99,7 @@ def atlas_args(**overrides):
         atlas_text_revision="fixed-revision",
         atlas_replay=True,
         atlas_diagnostics=False,
+        atlas_prototype_realign=False,
         ablation_id=None,
         ablation_group=None,
         ablation_config_hash=None,
@@ -253,6 +254,17 @@ class AtlasMethodTests(unittest.TestCase):
             validate_args(atlas_args(
                 atlas_replay=False, attention_weight=1.0, manifold_weight=0.0
             ))
+        with self.assertRaises(ValueError):
+            validate_args(atlas_args(
+                atlas_prototype_realign=True,
+                atlas_replay=False,
+                attention_weight=0.0,
+                manifold_weight=0.0,
+            ))
+        with self.assertRaises(ValueError):
+            validate_args(atlas_args(
+                atlas_prototype_realign=True, atlas_lora_enabled=False
+            ))
 
     def test_hybrid_classifier_fallback_and_single_sample_pca(self):
         model = build()
@@ -265,6 +277,72 @@ class AtlasMethodTests(unittest.TestCase):
         self.assertTrue(model.net.atlas_valid[0])
         self.assertEqual(int(model.net.atlas_effective_ranks[0]), 0)
         self.assertTrue(torch.isfinite(model.net.logits_from_embedding(embedding)).all())
+
+    def test_prototype_realignment_replaces_only_old_centroids(self):
+        model = build(atlas_args(atlas_prototype_realign=True))
+        old_values = torch.tensor(
+            [[1.0, 2.0, 3.0, 4.0], [3.0, 4.0, 5.0, 6.0]]
+        )
+        with torch.no_grad():
+            model.net.finalize_class(0, torch.tensor([[9.0, 0.0, 0.0, 0.0]]))
+            model.net.finalize_class(1, torch.tensor([[0.0, 9.0, 0.0, 0.0]]))
+            model.net.finalize_class(2, torch.tensor([[0.0, 0.0, 9.0, 0.0]]))
+        model.old_class_count = 2
+        counts_before = model.net.atlas_sample_counts.clone()
+        subspaces_before = model.net.atlas_subspaces.clone()
+        current_before = model.net.atlas_centroids[2].clone()
+
+        model._realign_old_centroids({
+            0: [old_values[:1], old_values[1:]],
+            1: [torch.tensor([[2.0, 6.0, 4.0, 8.0]])],
+        })
+
+        self.assertTrue(torch.allclose(model.net.atlas_centroids[0], old_values.mean(0)))
+        self.assertTrue(torch.allclose(
+            model.net.atlas_centroids[1], torch.tensor([2.0, 6.0, 4.0, 8.0])
+        ))
+        self.assertTrue(torch.equal(model.net.atlas_centroids[2], current_before))
+        self.assertTrue(torch.equal(model.net.atlas_sample_counts, counts_before))
+        self.assertTrue(torch.equal(model.net.atlas_subspaces, subspaces_before))
+        self.assertTrue(model._checkpoint_config()["prototype_realign"])
+        with self.assertRaisesRegex(RuntimeError, "old class 1"):
+            model._realign_old_centroids({0: [old_values]})
+
+    def test_prototype_realignment_uses_post_merge_memory_embeddings(self):
+        args = atlas_args(
+            atlas_prototype_realign=True,
+            reconstruction_weight=0.0,
+            manifold_weight=0.0,
+            attention_weight=0.0,
+            atlas_lora_mode="none",
+        )
+        model = build(args)
+        task0_bags = [make_bag(0, 0.2), make_bag(1, 0.5)]
+        task0 = TaskDataset(0, task0_bags)
+        model.begin_task(task0)
+        for bag in task0_bags:
+            model.save_buffer(*bag, task=0)
+        model.end_task(task0)
+
+        task1_bags = [make_bag(2, 0.8), make_bag(3, 1.1)]
+        task1 = TaskDataset(1, task1_bags)
+        model.begin_task(task1)
+        for bag in task1_bags:
+            model.save_buffer(*bag, task=1)
+        model.end_task(task1)
+
+        for label in (0, 1):
+            retained = [
+                entry for entry in model.memory.all("cpu")
+                if int(entry.label.reshape(-1)[0]) == label
+            ]
+            expected = torch.cat(
+                [entry.target_embedding for entry in retained], dim=0
+            ).mean(dim=0)
+            self.assertTrue(torch.allclose(
+                model.net.atlas_centroids[label].cpu(), expected, atol=1.0e-6
+            ))
+        self.assertEqual(model.memory.target_snapshot_task, 1)
 
     def test_two_task_replay_boundary_and_checkpoint_round_trip(self):
         model = build()

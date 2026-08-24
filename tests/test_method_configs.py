@@ -14,20 +14,21 @@ class MethodConfigTests(unittest.TestCase):
     def test_all_method_configs_parse(self):
         config_path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         expected = {
-            "atlas_mil", "amil", "agem", "derpp", "er_ace", "ewc_on",
+            "atlas_mil", "atlas_v2", "amil", "agem", "derpp", "er_ace", "ewc_on",
             "gdumb", "joint", "lwsr", "lwf", "micil", "owlora",
             "qpmil_vl", "sgd",
         }
         raw = yaml.safe_load(config_path.read_text())
         self.assertEqual(set(raw["methods"]), expected)
         baseline_methods = expected - {
-            "atlas_mil", "amil", "lwsr", "micil", "owlora", "qpmil_vl"
+            "atlas_mil", "atlas_v2", "amil", "lwsr", "micil", "owlora", "qpmil_vl"
         }
         supported = [
             *((method, backbone) for method in baseline_methods
               for backbone in ("generic_mil", "titan", "feather", "gigapath")),
             *((method, backbone) for method in ("atlas_mil", "amil")
               for backbone in ("generic_mil", "feather")),
+            ("atlas_v2", "feather"),
             *((method, backbone) for method in ("lwsr", "micil")
               for backbone in ("titan", "feather", "gigapath")),
             *(("owlora", backbone) for backbone in ("titan", "feather")),
@@ -80,6 +81,7 @@ class MethodConfigTests(unittest.TestCase):
         raw = yaml.safe_load(path.read_text())
         cases = {
             "atlas_mil": "feather",
+            "atlas_v2": "feather",
             "amil": "generic_mil",
             "lwsr": "titan",
             "micil": "feather",
@@ -102,6 +104,10 @@ class MethodConfigTests(unittest.TestCase):
     def test_new_methods_reject_unsupported_backbones_and_freezing(self):
         path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         invalid = [
+            ("atlas_v2", "titan", []),
+            ("atlas_v2", "generic_mil", []),
+            ("atlas_v2", "feather", ["--backbone_max_patches", "1"]),
+            ("atlas_v2", "feather", ["--atlasv2_replay", "--buffer_size", "29"]),
             ("atlas_mil", "titan", []),
             ("atlas_mil", "gigapath", []),
             ("atlas_mil", "feather", ["--backbone_freeze"]),
