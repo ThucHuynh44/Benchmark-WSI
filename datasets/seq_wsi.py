@@ -385,6 +385,10 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
         self.N_CLASSES_PER_TASK = tuple(self.task_num_classes)
         self.current_task = 0
         self.val_loader = None
+        # Validation loaders are retained for fold-specific cumulative model
+        # selection. Test loaders remain a separate collection and are never
+        # accepted by ATLAS calibration APIs.
+        self.val_loaders = []
         self._split_cache: Dict[Tuple[int, int], Tuple[WSIBagDataset, WSIBagDataset, WSIBagDataset]] = {}
 
     def task_slice(self, task_id: int) -> slice:
@@ -627,6 +631,12 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
             self.test_loaders[task_id] = test_loader
         else:
             raise RuntimeError("Tasks must be loaded sequentially")
+        if task_id == len(self.val_loaders):
+            self.val_loaders.append(val_loader)
+        elif task_id < len(self.val_loaders):
+            self.val_loaders[task_id] = val_loader
+        else:
+            raise RuntimeError("Validation tasks must be loaded sequentially")
         self.train_loader, self.val_loader = train_loader, val_loader
         self.current_task = max(self.current_task, task_id + 1)
         self.i = self.current_task

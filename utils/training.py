@@ -1,10 +1,12 @@
 """Training and evaluation for variable-class continual WSI streams."""
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 from pathlib import Path
 import time
+import subprocess
 from typing import Dict, List
 
 import numpy as np
@@ -16,7 +18,7 @@ from tqdm import tqdm
 from datasets import get_dataset
 from datasets.utils.continual_dataset import ContinualDataset
 from evaluation.artifacts import (
-    append_evaluation,
+    append_csv, append_evaluation,
     evaluation_metrics,
     finalize_artifacts,
     initialize_artifacts,
@@ -158,6 +160,16 @@ ATLAS_DIAGNOSTIC_FIELDS = [
     "within_current_overlap", "within_current_pair_count", "all_seen_overlap",
     "all_seen_pair_count", "atlas_valid_count", "mean_effective_rank",
     "memory_count",
+    "covariance_trace_before", "covariance_trace_after",
+    "effective_lowrank_rank", "sub_prototype_occupancy_min",
+    "prototype_offset_norm", "distribution_memory_bytes",
+    "selected_hyperparameters",
+]
+
+DISTRIBUTION_EVAL_FIELDS = [
+    "method", "ablation_id", "fold", "after_task", "n",
+    "cross_task_error_rate", "soft_task_top1_accuracy",
+    "masked_bacc_minus_class_il_bacc", "task_confusion_matrix_path",
 ]
 
 
@@ -340,7 +352,8 @@ def evaluate(
 
     class_metrics_all, task_metrics_all = [], []
     class_correct_total = task_correct_total = sample_total = 0
-    global_targets, global_predictions, global_probabilities = [], [], []
+    global_targets, global_predictions, global_task_predictions = [], [], []
+    global_probabilities, global_logits, global_soft_task_scores = [], [], []
     seen_count = dataset.seen_class_count(seen_task)
     total_classes = int(
         getattr(dataset, "total_num_classes", sum(dataset.task_num_classes))
@@ -351,6 +364,7 @@ def evaluate(
             evaluation_start = time.perf_counter()
             task_slice = dataset.task_slice(task_id)
             class_targets, class_predictions_all, class_probabilities_all = [], [], []
+            class_logits_all, soft_task_scores_all = [], []
             task_predictions_all, task_probabilities_all = [], []
             class_loss_sum = task_loss_sum = 0.0
             class_prediction_rows, task_prediction_rows = [], []
@@ -371,7 +385,18 @@ def evaluate(
                 )
                 num_patches_used = int(features.shape[-2])
                 labels = labels.to(model.device)
-                logits = model([features, coords, patch_size])[0]
+                diagnostic_forward = getattr(
+                    model, "forward_with_distribution_diagnostics", None
+                )
+                if callable(diagnostic_forward) and bool(
+                    getattr(model, "distribution_enabled", False)
+                ):
+                    logits, soft_task_scores = diagnostic_forward(
+                        [features, coords, patch_size]
+                    )
+                else:
+                    logits = model([features, coords, patch_size])[0]
+                    soft_task_scores = None
 
                 class_logits = logits.clone()
                 mask_unseen_classes(class_logits, dataset, seen_task)
@@ -410,6 +435,9 @@ def evaluate(
                 task_predictions_all.append(task_prediction_values)
                 class_probabilities_all.append(class_probability_values)
                 task_probabilities_all.append(task_probability_values)
+                class_logits_all.append(logits_values[:, :seen_count])
+                if soft_task_scores is not None:
+                    soft_task_scores_all.append(soft_task_scores.cpu().numpy())
 
                 if artifact_context is not None:
                     class_prediction_rows.append(_prediction_row(
@@ -488,7 +516,11 @@ def evaluate(
             sample_total += total
             global_targets.append(targets_array)
             global_predictions.append(class_predictions_array)
+            global_task_predictions.append(task_predictions_array)
             global_probabilities.append(class_probabilities_array)
+            global_logits.append(np.concatenate(class_logits_all))
+            if soft_task_scores_all:
+                global_soft_task_scores.append(np.concatenate(soft_task_scores_all))
 
     global_metrics = evaluation_metrics(
         np.concatenate(global_targets),
@@ -499,6 +531,62 @@ def evaluate(
             weights=[metric["n"] for metric in class_metrics_all],
         ),
     )
+
+    if artifact_context is not None and bool(getattr(model, "distribution_enabled", False)):
+        targets = np.concatenate(global_targets).astype(int)
+        predictions = np.concatenate(global_predictions).astype(int)
+        task_predictions = np.concatenate(global_task_predictions).astype(int)
+        logits = np.concatenate(global_logits)[:, :seen_count]
+        class_to_task = np.empty(seen_count, dtype=int)
+        task_scores = []
+        for task, (offset, count) in enumerate(
+            zip(dataset.class_offsets[: seen_task + 1], dataset.task_num_classes[: seen_task + 1])
+        ):
+            start, stop = int(offset), int(offset + count)
+            class_to_task[start:stop] = task
+            if not global_soft_task_scores:
+                temperature = float(model.net.distribution_head.selected_tau_task)
+                scaled = logits[:, start:stop] / max(temperature, 1.0e-6)
+                maximum = scaled.max(1)
+                task_scores.append(
+                    max(temperature, 1.0e-6) * (
+                        maximum + np.log(np.exp(scaled - maximum[:, None]).mean(1))
+                    )
+                )
+        true_tasks = class_to_task[targets]
+        predicted_tasks = class_to_task[predictions]
+        soft_scores = (
+            np.concatenate(global_soft_task_scores)[:, : seen_task + 1]
+            if global_soft_task_scores else np.stack(task_scores, axis=1)
+        )
+        soft_tasks = soft_scores.argmax(1)
+
+        def macro_recall(values):
+            return float(np.mean([
+                np.mean(values[targets == label] == label)
+                for label in np.unique(targets)
+            ]))
+
+        row = {
+            "method": model.NAME,
+            "ablation_id": getattr(model.args, "ablation_id", None) or "",
+            "fold": artifact_context["fold"],
+            "after_task": artifact_context["after_task"],
+            "n": len(targets),
+            "cross_task_error_rate": float(np.mean(predicted_tasks != true_tasks)),
+            "soft_task_top1_accuracy": float(np.mean(soft_tasks == true_tasks)),
+            "masked_bacc_minus_class_il_bacc": macro_recall(task_predictions) - macro_recall(predictions),
+        }
+        row["task_confusion_matrix_path"] = write_confusion_matrix(
+            str(Path(artifact_context["artifact_root"]) / "task_inference_confusion"),
+            artifact_context["fold"], artifact_context["after_task"],
+            artifact_context["after_task"], true_tasks, soft_tasks,
+            np.arange(seen_task + 1),
+        )
+        append_csv(
+            artifact_context["distribution_eval_path"], [row],
+            DISTRIBUTION_EVAL_FIELDS,
+        )
 
     model.net.train(status)
     return EvaluationResult(
@@ -836,6 +924,46 @@ def _write_resource_manifests(state) -> None:
     )
 
 
+def _method_run_metadata(model) -> Dict[str, object]:
+    metadata_hook = getattr(model, "get_run_metadata", None)
+    if not callable(metadata_hook):
+        return {}
+    method_metadata = metadata_hook()
+    if not isinstance(method_metadata, dict):
+        raise TypeError("get_run_metadata() must return a dictionary")
+    return method_metadata
+
+
+def _repo_diff_hash(root: Path) -> str | None:
+    """Identify a development-only dirty source tree without storing its diff."""
+
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=root, check=True,
+            capture_output=True,
+        ).stdout
+        if not status.strip():
+            return None
+        difference = subprocess.run(
+            ["git", "diff", "--binary", "HEAD"], cwd=root, check=True,
+            capture_output=True,
+        ).stdout
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=root, check=True, capture_output=True, text=True,
+        ).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    digest = hashlib.sha256(status + b"\0" + difference)
+    for relative in sorted(untracked):
+        path = root / relative
+        try:
+            digest.update(relative.encode("utf-8") + b"\0" + path.read_bytes())
+        except OSError:
+            return "unavailable"
+    return digest.hexdigest()
+
+
 def _initialize_evaluation_run(args, dataset, model, fold):
     """Create one canonical artifact tree shared by all selected folds."""
     state = getattr(args, "_evaluation_artifact_state", None)
@@ -851,7 +979,9 @@ def _initialize_evaluation_run(args, dataset, model, fold):
         "artifact_root": str(root),
         "component_rows": [],
         "diagnostic_rows": [],
+        "distribution_eval_path": str(root / "atlas_distribution_eval.csv"),
     }
+    write_csv(state["distribution_eval_path"], [], DISTRIBUTION_EVAL_FIELDS)
     selected_folds = list(getattr(args, "selected_folds", [fold]))
     common_manifest = {
         "backbone": getattr(args, "backbone", ""),
@@ -888,14 +1018,10 @@ def _initialize_evaluation_run(args, dataset, model, fold):
         ),
         "evaluate_fwt": bool(getattr(args, "evaluate_fwt", False)),
         "repo_commit": repo_commit(Path(__file__).resolve().parents[1]),
+        "repo_diff_hash": _repo_diff_hash(Path(__file__).resolve().parents[1]),
         "resolved_config": _resolved_manifest_args(args),
     }
-    metadata_hook = getattr(model, "get_run_metadata", None)
-    if callable(metadata_hook):
-        method_metadata = metadata_hook()
-        if not isinstance(method_metadata, dict):
-            raise TypeError("get_run_metadata() must return a dictionary")
-        common_manifest.update(method_metadata)
+    common_manifest.update(_method_run_metadata(model))
     state["manifest_common"] = common_manifest
     _write_resource_manifests(state)
     args._evaluation_artifact_state = state
@@ -913,6 +1039,8 @@ def _artifact_context(state, args, dataset, model, fold, after_task):
         "total_classes": int(dataset.total_num_classes),
         "k": int(getattr(args, "backbone_max_patches", 0) or 0),
         "seed": getattr(args, "seed", None),
+        "artifact_root": state["artifact_root"],
+        "distribution_eval_path": state["distribution_eval_path"],
     }
 
 
@@ -1014,8 +1142,9 @@ def train(model: ContinualModel, dataset: ContinualDataset, args: Namespace, fol
                             loss=f"{ssl_loss / ssl_updates:.4f}", refresh=False
                         )
 
+            training_free = bool(getattr(model, "distribution_enabled", False))
             epoch_bar = tqdm(
-                range(model.args.n_epochs),
+                range(0 if training_free else model.args.n_epochs),
                 desc=f"fold {fold} task {task_id + 1}/{dataset.N_TASKS}",
                 leave=False,
                 disable=bool(getattr(args, "non_verbose", False)),
@@ -1081,7 +1210,13 @@ def train(model: ContinualModel, dataset: ContinualDataset, args: Namespace, fol
                 if scheduler is not None:
                     scheduler.step()
 
-            load_checkpoint(model, checkpoint_path, dataset, fold)
+            if not training_free:
+                load_checkpoint(model, checkpoint_path, dataset, fold)
+            elif not bool(getattr(args, "non_verbose", False)):
+                tqdm.write(
+                    f"[train] fold={fold} task={task_id + 1}/{dataset.N_TASKS} "
+                    "training-free; fitting train-only statistics at task boundary"
+                )
             if hasattr(model, "save_buffer") and bool(
                 getattr(model, "replay_enabled", True)
             ):
@@ -1098,6 +1233,25 @@ def train(model: ContinualModel, dataset: ContinualDataset, args: Namespace, fol
                     )
             if hasattr(model, "end_task"):
                 model.end_task(dataset)
+            calibration_hook = getattr(model, "get_calibration_manifest", None)
+            if callable(calibration_hook):
+                calibration_manifest = calibration_hook()
+                if calibration_manifest is not None:
+                    serialized = json.dumps(
+                        calibration_manifest, indent=2, sort_keys=True
+                    ) + "\n"
+                    forbidden = ('"embedding_raw":', '"embedding_norm":', '"test_embeddings":')
+                    if any(token in serialized for token in forbidden):
+                        raise RuntimeError(
+                            "Calibration manifest attempted to persist an embedding cache"
+                        )
+                    calibration_dir = (
+                        Path(artifact_state["artifact_root"]) / "calibration"
+                    )
+                    calibration_dir.mkdir(parents=True, exist_ok=True)
+                    (calibration_dir / f"fold_{int(fold)}.json").write_text(
+                        serialized, encoding="utf-8"
+                    )
             diagnostic_hook = getattr(model, "get_task_diagnostics", None)
             if callable(diagnostic_hook):
                 diagnostics = diagnostic_hook()
@@ -1158,6 +1312,11 @@ def train(model: ContinualModel, dataset: ContinualDataset, args: Namespace, fol
         )
     else:
         print(f"[resources] fold {fold}: CUDA unavailable; peak GPU memory is N/A")
+    # Refresh dynamic method metadata after the final task. In particular,
+    # replay accounting is empty when the manifest is first initialized but
+    # finalized here; keeping it current lets summary tools avoid huge
+    # checkpoint deserialization.
+    artifact_state["manifest_common"].update(_method_run_metadata(model))
     _write_resource_manifests(artifact_state)
     finalize_artifacts(
         artifact_state["class_il"], model.NAME, artifact_state["training_times"],

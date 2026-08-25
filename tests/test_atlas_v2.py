@@ -55,6 +55,7 @@ def args(**overrides):
         task_order=["brca", "nsclc"], seed=5, fold=1,
         buffer_size=0, minibatch_size=1, bags_per_update=1,
         atlasv2_lora=False, atlasv2_replay=False, atlasv2_prototype=False,
+        atlasv2_prototype_lda=False,
         atlasv2_realign=False, atlasv2_prompt=False, atlasv2_nce=False,
         atlasv2_train_classifier=True, atlasv2_lora_rank=2,
         atlasv2_lora_alpha=2.0, atlasv2_lora_merge_scale=1.0,
@@ -63,6 +64,15 @@ def args(**overrides):
         atlasv2_comel_orthogonal_weight=1.0,
         atlasv2_prompt_fusion=0.5, atlasv2_prompt_ce_weight=1.0,
         atlasv2_nce_temperature=0.07, atlasv2_nce_weight=1.0,
+        atlasv2_distribution_mode="legacy", atlasv2_distribution_alpha=0.1,
+        atlasv2_distribution_rho=0.5, atlasv2_distribution_rank=8,
+        atlasv2_distribution_clusters=3, atlasv2_distribution_tau_multi=0.1,
+        atlasv2_distribution_beta=0.25, atlasv2_distribution_tau_task=0.1,
+        atlasv2_pt_steps=2, atlasv2_pt_lr=0.05,
+        atlasv2_pt_samples_per_class=4, atlasv2_pt_temperature=0.1,
+        atlasv2_pt_anchor_weight=0.1, atlasv2_pt_margin_weight=0.0,
+        atlasv2_pt_margin=0.2, atlasv2_ranpac_dim=7,
+        atlasv2_ranpac_ridge=1.0,
         atlasv2_text_model_id="fixed", atlasv2_text_revision="fixed",
         ablation_id=None, ablation_group=None, ablation_config_hash=None,
     )
@@ -100,6 +110,7 @@ class TaskData:
         self.train_loader = DataLoader(
             Bags(values), batch_size=1, shuffle=False, collate_fn=collate
         )
+        self.val_loaders = [self.train_loader]
 
 
 ANCHORS = torch.tensor(
@@ -251,6 +262,7 @@ class AtlasV2Tests(unittest.TestCase):
         self.assertFalse(parsed.atlasv2_comel_owlora)
         self.assertEqual(parsed.atlasv2_comel_svd_energy, 0.99)
         self.assertEqual(parsed.atlasv2_comel_orthogonal_weight, 1.0)
+        self.assertFalse(parsed.atlasv2_prototype_lda)
 
     def test_production_validation_rejects_hidden_or_invalid_coupling(self):
         baseline = args(feature_dim=768)
@@ -267,6 +279,11 @@ class AtlasV2Tests(unittest.TestCase):
             },
             {"atlasv2_comel_svd_energy": 1.0},
             {"atlasv2_comel_orthogonal_weight": -1.0},
+            {"atlasv2_prototype_lda": True},
+            {
+                "atlasv2_prototype": True, "atlasv2_prototype_lda": True,
+                "atlasv2_train_classifier": True,
+            },
         )
         for override in invalid:
             with self.subTest(override=override), self.assertRaises(ValueError):
@@ -414,6 +431,84 @@ class AtlasV2Tests(unittest.TestCase):
         logits = model.net.inference_logits(embedding, 2)
         self.assertEqual(int(logits.argmax(1)), 0)
         self.assertFalse(hasattr(model.net, "prompt_projector"))
+
+    def test_distribution_setting_fits_calibrates_and_strict_checkpoints(self):
+        options = args(
+            atlasv2_prototype=True, atlasv2_train_classifier=False,
+            atlasv2_distribution_mode="diag",
+            atlasv2_distribution_clusters=2,
+        )
+        model = build(options)
+        task0 = TaskData(0, [
+            bag(0, patches=7, shift=-1.0), bag(0, patches=8, shift=-0.8),
+            bag(1, patches=7, shift=0.8), bag(1, patches=8, shift=1.0),
+        ])
+        model.begin_task(task0)
+        model.end_task(task0)
+        self.assertFalse(hasattr(model.net, "prototype_bank"))
+        self.assertEqual(model.net.distribution_head.class_count[:2].tolist(), [2, 2])
+        self.assertEqual(model.calibration_history[0]["split"], "validation")
+        self.assertFalse(model.calibration_history[0]["contains_test_cache"])
+        output = model(*bag(0, patches=9)[:3])[0]
+        self.assertTrue(torch.isfinite(output[:, :2]).all())
+        self.assertTrue(torch.isneginf(output[:, 2:]).all())
+
+        module_state = copy.deepcopy(model.state_dict())
+        method_state = copy.deepcopy(model.get_checkpoint_state())
+        restored = build(options)
+        restored.load_state_dict(module_state, strict=True)
+        restored.load_checkpoint_state(method_state, strict=True)
+        self.assertEqual(restored.calibration_history, model.calibration_history)
+
+    def test_train_only_oas_lda_is_cumulative_read_only_and_checkpointed(self):
+        options = args(
+            atlasv2_prototype=True, atlasv2_prototype_lda=True,
+            atlasv2_train_classifier=False,
+        )
+        model = build(options)
+        task0 = TaskData(0, [
+            bag(0, patches=7, shift=-1.0), bag(0, patches=8, shift=-0.8),
+            bag(1, patches=7, shift=0.8), bag(1, patches=8, shift=1.0),
+        ])
+        model.begin_task(task0)
+        model.end_task(task0)
+        self.assertTrue(bool(model.net.lda_fitted))
+        self.assertEqual(model.net.lda_counts[:2].tolist(), [2, 2])
+        self.assertGreaterEqual(float(model.net.lda_shrinkage), 0.0)
+        self.assertLessEqual(float(model.net.lda_shrinkage), 1.0)
+
+        task1 = TaskData(1, [
+            bag(2, patches=7, shift=-0.5), bag(2, patches=8, shift=-0.3),
+            bag(3, patches=7, shift=0.3), bag(3, patches=8, shift=0.5),
+        ])
+        model.begin_task(task1)
+        model.end_task(task1)
+        self.assertEqual(model.net.lda_counts.tolist(), [2, 2, 2, 2])
+        before_inference = {
+            name: value.detach().clone()
+            for name, value in model.net.named_buffers()
+        }
+        query = bag(0, patches=9)
+        output1 = model(*query[:3])[0]
+        output2 = model(*query[:3])[0]
+        self.assertTrue(torch.equal(output1, output2))
+        self.assertTrue(torch.isfinite(output1).all())
+        self.assertTrue(all(
+            torch.equal(before_inference[name], value)
+            for name, value in model.net.named_buffers()
+        ))
+        metadata = model.get_run_metadata()["prototype_metric_accounting"]
+        self.assertEqual(metadata["metric"], "oas_shrinkage_lda")
+        self.assertEqual(metadata["train_samples"], 8)
+        self.assertFalse(metadata["test_time_adaptation"])
+
+        module_state = copy.deepcopy(model.state_dict())
+        method_state = copy.deepcopy(model.get_checkpoint_state())
+        restored = build(options)
+        restored.load_state_dict(module_state)
+        restored.load_checkpoint_state(method_state)
+        self.assertTrue(torch.equal(restored.net.lda_weight, model.net.lda_weight))
+        self.assertTrue(torch.equal(restored.net.lda_scatter, model.net.lda_scatter))
 
     def test_prompt_and_nce_are_explicit_once_and_have_finite_gradients(self):
         base = dict(

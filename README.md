@@ -434,6 +434,12 @@ Generate the non-ranking summary with:
 python scripts/summarize_atlas_v2_ablations.py
 ```
 
+The summarizer reads replay accounting from each run manifest and reads every
+evaluation matrix only once. Legacy manifests recorded replay accounting before
+training; for those runs the first summary uses memory-mapped checkpoint
+metadata and writes `replay_memory_cache.json` beside the summary. Later calls
+reuse that small cache and never deserialize the full feature-bag storage.
+
 The optional `atlasv2_base_lora_svd_orthogonal` geometry extension otherwise
 matches `atlasv2_base_lora`. It uses SVD at task boundaries to track the left
 subspace of merged LoRA updates and hard-projects each later LoRA update onto
@@ -478,6 +484,66 @@ head because it supplies the gradient used to learn LoRA. Consequently,
 `atlasv2_replay_proto` is an intentional negative control: replay memory is
 populated, but a frozen embedding space should make its prototype predictions
 match `atlasv2_frozen_proto` up to numerical determinism.
+
+### Train-only frozen prototype extension
+
+The completed results motivate keeping the FEATHER representation frozen:
+`atlasv2_frozen_proto` reaches bACC `0.6856` and BWT `-0.0656`, while the
+ATLAS-MIL `pruned_neither` control reaches `0.6927` and `-0.0607`; the gap is
+small compared with their fold variation. In contrast, ATLAS-v2 LoRA and
+prototype realignment increase drift substantially. The controlled extension
+`atlasv2_frozen_proto_oas_lda` therefore changes only the prototype metric.
+
+At each task boundary it extracts embeddings from the current **training
+split**, accumulates normalized per-class means and pooled within-class scatter,
+then fits equal-prior LDA with automatic Oracle Approximating Shrinkage (OAS).
+This is a regularized Mahalanobis nearest-class-mean classifier: ordinary cosine
+NCM assumes a spherical metric, whereas this setting downweights noisy feature
+directions learned from training statistics. Old training data are represented
+exactly by sufficient statistics; no WSI replay buffer is needed. Evaluation is
+strictly read-only: it never updates means, covariance, shrinkage, or classifier
+weights from validation/test inputs.
+
+```bash
+python scripts/run_atlas_v2_ablations.py dry-run \
+  --variants atlasv2_frozen_proto_oas_lda \
+  --folds 0
+```
+
+Replace `dry-run` with `run --gpus 0` to train it. This is an experimental
+candidate, not a claimed improvement until its fold results are complete.
+
+### ATLAS frozen distribution suite
+
+The distribution suite adds ten frozen-FEATHER settings, from normalized
+diagonal and low-rank class distributions through deterministic spherical
+multi-prototypes, task-centroid/LME calibration, prototype-only tuning, and an
+architecture-faithful RanPAC Phase-2 control. `atlasv2_frozen_atlas_tf` is the
+training-free core; `atlasv2_frozen_atlas_pt` is the optional train-only
+prototype-offset extension. Neither method adapts on test slides.
+
+All implementation shapes use the runtime FEATHER classifier input dimension;
+the pinned FEATHER revision is additionally asserted to produce 512-D slide
+embeddings. NCM/ATLAS statistics use normalized embeddings, while RanPAC uses
+raw slide embeddings. Checkpoints contain distribution sufficient statistics,
+not train/validation slide embeddings.
+
+Model selection is fold-specific and validation-only. It is staged rather than
+a cross-stage Cartesian search: covariance, multi-prototype, and task-LME
+stages lock their selected predecessors. Calibration manifests are written to
+`results/<exp_desc>/evaluation/calibration/fold_<fold>.json` and explicitly
+record that no test cache is present.
+
+```bash
+python scripts/run_atlas_v2_ablations.py dry-run \
+  --variants atlasv2_frozen_proto_diag atlasv2_frozen_atlas_tf \
+  atlasv2_frozen_atlas_pt atlasv2_frozen_ranpac \
+  --folds 0
+```
+
+Experimental `run`/`resume` commands require a clean Git worktree by default.
+`--allow-dirty` exists only for development smoke tests; manifests then include
+a source-diff hash.
 
 ## Updates / TODOs
 Please follow this GitHub for more updates.

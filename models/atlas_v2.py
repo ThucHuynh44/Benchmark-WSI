@@ -14,6 +14,7 @@ import os
 from argparse import ArgumentParser, BooleanOptionalAction, Namespace
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
+from itertools import product
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
 
 import torch
@@ -22,9 +23,15 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from backbone.generic_mil import build_mil_backbone
-from backbone.pretrained_mil import TITAN_MODEL_ID, TITAN_REVISION, _resolve_snapshot
+from backbone.pretrained_mil import (
+    FEATHER_MODEL_ID, FEATHER_REVISION, TITAN_MODEL_ID, TITAN_REVISION,
+    _resolve_snapshot,
+)
 from configs.qpmil_vl_prompts import prompt_schema_hash, resolve_class_prompts
 from models.qpmil_vl import build_class_features
+from models.atlas_distribution import (
+    DISTRIBUTION_MODES, DISTRIBUTION_STATE_VERSION, FrozenDistributionHead,
+)
 from models.utils.continual_model import ContinualModel
 from models.utils.owlora import OWLoRAAdapter
 from models.utils.wsi_replay import unpack_prepared_batch
@@ -53,6 +60,26 @@ def get_parser() -> ArgumentParser:
     parser.add_argument("--atlasv2_prompt_ce_weight", type=float, default=1.0)
     parser.add_argument("--atlasv2_nce_temperature", type=float, default=0.07)
     parser.add_argument("--atlasv2_nce_weight", type=float, default=1.0)
+    parser.add_argument(
+        "--atlasv2_distribution_mode", type=str, default="legacy",
+        choices=("legacy", *DISTRIBUTION_MODES),
+    )
+    parser.add_argument("--atlasv2_distribution_alpha", type=float, default=0.1)
+    parser.add_argument("--atlasv2_distribution_rho", type=float, default=0.5)
+    parser.add_argument("--atlasv2_distribution_rank", type=int, default=8)
+    parser.add_argument("--atlasv2_distribution_clusters", type=int, default=3)
+    parser.add_argument("--atlasv2_distribution_tau_multi", type=float, default=0.1)
+    parser.add_argument("--atlasv2_distribution_beta", type=float, default=0.25)
+    parser.add_argument("--atlasv2_distribution_tau_task", type=float, default=0.1)
+    parser.add_argument("--atlasv2_pt_steps", type=int, default=200)
+    parser.add_argument("--atlasv2_pt_lr", type=float, default=0.05)
+    parser.add_argument("--atlasv2_pt_samples_per_class", type=int, default=32)
+    parser.add_argument("--atlasv2_pt_temperature", type=float, default=0.1)
+    parser.add_argument("--atlasv2_pt_anchor_weight", type=float, default=0.1)
+    parser.add_argument("--atlasv2_pt_margin_weight", type=float, default=0.0)
+    parser.add_argument("--atlasv2_pt_margin", type=float, default=0.2)
+    parser.add_argument("--atlasv2_ranpac_dim", type=int, default=2000)
+    parser.add_argument("--atlasv2_ranpac_ridge", type=float, default=1.0)
     parser.add_argument("--atlasv2_text_model_id", type=str, default=TITAN_MODEL_ID)
     parser.add_argument("--atlasv2_text_revision", type=str, default=TITAN_REVISION)
     for option, help_text in (
@@ -67,6 +94,10 @@ def get_parser() -> ArgumentParser:
         ),
         ("atlasv2_replay", "Enable full-feature-bag experience replay."),
         ("atlasv2_prototype", "Use continual slide prototypes at inference."),
+        (
+            "atlasv2_prototype_lda",
+            "Fit a train-only OAS-shrinkage LDA metric over frozen prototypes.",
+        ),
         ("atlasv2_realign", "Refresh old prototypes from replay at task boundaries."),
         ("atlasv2_prompt", "Enable the explicit semantic prompt branch."),
         ("atlasv2_nce", "Add slide-to-class-prompt InfoNCE."),
@@ -96,6 +127,8 @@ def validate_args(args) -> None:
     comel_owlora = bool(getattr(args, "atlasv2_comel_owlora", False))
     replay = bool(getattr(args, "atlasv2_replay", False))
     prototype = bool(getattr(args, "atlasv2_prototype", False))
+    prototype_lda = bool(getattr(args, "atlasv2_prototype_lda", False))
+    distribution_mode = str(getattr(args, "atlasv2_distribution_mode", "legacy"))
     realign = bool(getattr(args, "atlasv2_realign", False))
     prompt = bool(getattr(args, "atlasv2_prompt", False))
     nce = bool(getattr(args, "atlasv2_nce", False))
@@ -109,6 +142,44 @@ def validate_args(args) -> None:
         raise ValueError("ATLAS-v2 prompt extension requires the realigned core")
     if nce and not prompt:
         raise ValueError("ATLAS-v2 NCE requires the prompt branch")
+    if prototype_lda and not prototype:
+        raise ValueError("ATLAS-v2 train-only LDA requires prototypes")
+    if prototype_lda and any(
+        (lora, replay, realign, prompt, nce,
+         bool(getattr(args, "atlasv2_train_classifier", True)))
+    ):
+        raise ValueError(
+            "ATLAS-v2 train-only LDA is restricted to the frozen-prototype "
+            "control without LoRA/replay/realignment/prompt/NCE/linear CE"
+        )
+    if distribution_mode != "legacy":
+        if distribution_mode not in DISTRIBUTION_MODES:
+            raise ValueError(f"Unknown ATLAS-v2 distribution mode {distribution_mode!r}")
+        if not prototype or prototype_lda:
+            raise ValueError("ATLAS-v2 distribution settings require prototypes and exclude legacy OAS-LDA")
+        if any((lora, replay, realign, prompt, nce, bool(getattr(args, "atlasv2_train_classifier", True)))):
+            raise ValueError("ATLAS-v2 distribution suite requires frozen FEATHER without replay/PETL/linear CE")
+        if int(getattr(args, "atlasv2_distribution_rank", 0)) not in (2, 4, 8):
+            raise ValueError("ATLAS-v2 distribution rank must be one of {2,4,8}")
+        if int(getattr(args, "atlasv2_distribution_clusters", 0)) not in (2, 3):
+            raise ValueError("ATLAS-v2 distribution clusters must be one of {2,3}")
+        if int(getattr(args, "atlasv2_pt_steps", 0)) <= 0:
+            raise ValueError("ATLAS-v2 PT steps must be positive")
+        if int(getattr(args, "atlasv2_ranpac_dim", 0)) <= 0:
+            raise ValueError("ATLAS-v2 RanPAC projection dimension must be positive")
+        for name in (
+            "atlasv2_distribution_alpha", "atlasv2_distribution_tau_multi",
+            "atlasv2_distribution_tau_task", "atlasv2_pt_lr",
+            "atlasv2_ranpac_ridge",
+        ):
+            if float(getattr(args, name, 0.0)) <= 0.0:
+                raise ValueError(f"{name} must be positive")
+        if not 0.0 <= float(getattr(args, "atlasv2_distribution_rho", -1.0)) <= 1.0:
+            raise ValueError("atlasv2_distribution_rho must be in [0,1]")
+        if float(getattr(args, "atlasv2_distribution_beta", -1.0)) < 0.0:
+            raise ValueError("atlasv2_distribution_beta must be non-negative")
+        if int(getattr(args, "atlasv2_pt_samples_per_class", 0)) <= 0:
+            raise ValueError("atlasv2_pt_samples_per_class must be positive")
     if svd_orthogonal and not lora:
         raise ValueError("ATLAS-v2 SVD-orthogonal adaptation requires LoRA")
     if comel_owlora and not lora:
@@ -610,6 +681,8 @@ class AtlasV2Network(nn.Module):
     def __init__(
         self, backbone: nn.Module, num_classes: int, embedding_dim: int,
         prototype: bool, prompt_anchors: torch.Tensor | None, prompt_fusion: float,
+        prototype_lda: bool = False,
+        distribution_head: FrozenDistributionHead | None = None,
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -617,11 +690,29 @@ class AtlasV2Network(nn.Module):
         self.num_classes = int(num_classes)
         self.embedding_dim = int(embedding_dim)
         self.prototype_enabled = bool(prototype)
+        self.prototype_lda_enabled = bool(prototype_lda)
+        self.distribution_head = distribution_head
+        self.distribution_enabled = distribution_head is not None
+        if self.prototype_lda_enabled and not self.prototype_enabled:
+            raise ValueError("ATLAS-v2 LDA metric requires a prototype bank")
         self.prompt_enabled = prompt_anchors is not None
         self.prompt_fusion = float(prompt_fusion)
-        if self.prototype_enabled:
+        # Strong compatibility contract: new distribution buffers must never
+        # enter the legacy NCM/OAS state-dict keyspace.
+        if self.prototype_enabled and not self.distribution_enabled:
             self.register_buffer("prototype_bank", torch.zeros(num_classes, embedding_dim))
             self.register_buffer("prototype_valid", torch.zeros(num_classes, dtype=torch.bool))
+        if self.prototype_lda_enabled:
+            # These are sufficient statistics of training embeddings only.
+            # They are finalized at task boundaries and are read-only at test.
+            self.register_buffer("lda_means", torch.zeros(num_classes, embedding_dim))
+            self.register_buffer("lda_counts", torch.zeros(num_classes, dtype=torch.long))
+            self.register_buffer("lda_scatter", torch.zeros(embedding_dim, embedding_dim))
+            self.register_buffer("lda_degrees", torch.zeros((), dtype=torch.long))
+            self.register_buffer("lda_weight", torch.zeros(num_classes, embedding_dim))
+            self.register_buffer("lda_bias", torch.zeros(num_classes))
+            self.register_buffer("lda_shrinkage", torch.ones(()))
+            self.register_buffer("lda_fitted", torch.zeros((), dtype=torch.bool))
         if self.prompt_enabled:
             anchors = F.normalize(torch.as_tensor(prompt_anchors).detach().float(), dim=1)
             self.register_buffer("prompt_anchors", anchors)
@@ -654,6 +745,14 @@ class AtlasV2Network(nn.Module):
         # benchmark evaluation explicitly enables prototype inference.
         if not self.prototype_enabled or not use_prototype:
             logits = self.linear_logits(embedding)
+        elif self.distribution_enabled:
+            logits = self.distribution_head.scores(embedding, seen_classes)
+        elif self.prototype_lda_enabled:
+            if not bool(self.lda_fitted):
+                raise RuntimeError("ATLAS-v2 train-only LDA has not been fitted")
+            z = F.normalize(embedding, dim=1, eps=1.0e-6)
+            logits = F.linear(z, self.lda_weight, self.lda_bias)
+            logits = logits.masked_fill(~self.prototype_valid.unsqueeze(0), float("-inf"))
         else:
             z = F.normalize(embedding, dim=1, eps=1.0e-6)
             prototypes = F.normalize(self.prototype_bank, dim=1, eps=1.0e-6)
@@ -674,12 +773,21 @@ class AtlasV2Network(nn.Module):
         use_prototype=True,
     ):
         embedding = self.encode(features, coords, patch_size_level0)
-        return {
-            "embedding": embedding,
-            "logits": self.inference_logits(
+        task_scores = None
+        if self.distribution_enabled and bool(use_prototype):
+            logits, task_scores = self.distribution_head.scores_and_task_scores(
+                embedding,
+                self.num_classes if seen_classes is None else int(seen_classes),
+            )
+        else:
+            logits = self.inference_logits(
                 embedding, self.num_classes if seen_classes is None else int(seen_classes),
                 bool(use_prototype),
-            ),
+            )
+        return {
+            "embedding": embedding,
+            "logits": logits,
+            "soft_task_scores": task_scores,
         }
 
     def forward(self, features, coords=None, patch_size_level0=None, **kwargs):
@@ -704,6 +812,76 @@ class AtlasV2Network(nn.Module):
         prototype = F.normalize(values.mean(dim=0), dim=0)
         self.prototype_bank[int(label)].copy_(prototype.to(self.prototype_bank))
         self.prototype_valid[int(label)] = True
+
+    @torch.no_grad()
+    def update_lda_statistics(self, label: int, embeddings: torch.Tensor) -> None:
+        """Accumulate one class's train-only normalized mean and scatter."""
+
+        if not self.prototype_lda_enabled:
+            raise RuntimeError("ATLAS-v2 train-only LDA is disabled")
+        label = int(label)
+        if int(self.lda_counts[label]) != 0:
+            raise RuntimeError(f"ATLAS-v2 LDA class {label} was already finalized")
+        values = F.normalize(
+            embeddings.detach().float().reshape(-1, self.embedding_dim), dim=1,
+            eps=1.0e-6,
+        ).to(self.lda_scatter)
+        if values.shape[0] == 0 or not torch.isfinite(values).all():
+            raise ValueError("Cannot fit LDA from empty/non-finite train embeddings")
+        mean = values.mean(0)
+        centered = values - mean
+        self.lda_means[label].copy_(mean)
+        self.lda_counts[label] = int(values.shape[0])
+        self.lda_scatter.add_(centered.t() @ centered)
+        self.lda_degrees.add_(max(int(values.shape[0]) - 1, 0))
+
+    @torch.no_grad()
+    def fit_lda(self, seen_classes: int) -> None:
+        """Fit an equal-prior OAS-shrinkage LDA classifier from train statistics."""
+
+        if not self.prototype_lda_enabled:
+            raise RuntimeError("ATLAS-v2 train-only LDA is disabled")
+        seen_classes = int(seen_classes)
+        if seen_classes <= 0 or bool((self.lda_counts[:seen_classes] <= 0).any()):
+            raise RuntimeError("ATLAS-v2 LDA is missing a seen class's train statistics")
+
+        dimensions = self.embedding_dim
+        degrees = int(self.lda_degrees.item())
+        empirical = self.lda_scatter.float() / float(max(degrees, 1))
+        mu = empirical.trace() / float(dimensions)
+        epsilon = torch.finfo(empirical.dtype).eps
+        if degrees == 0 or not torch.isfinite(mu) or float(mu) <= epsilon:
+            mu = empirical.new_tensor(1.0)
+            shrinkage = empirical.new_tensor(1.0)
+        else:
+            alpha = empirical.square().mean()
+            numerator = alpha + mu.square()
+            denominator = float(degrees + 1) * (
+                alpha - mu.square() / float(dimensions)
+            )
+            shrinkage = (
+                empirical.new_tensor(1.0)
+                if not torch.isfinite(denominator) or float(denominator) <= epsilon
+                else (numerator / denominator).clamp(0.0, 1.0)
+            )
+        covariance = (1.0 - shrinkage) * empirical
+        covariance.diagonal().add_(shrinkage * mu)
+        covariance.diagonal().add_(torch.clamp(mu * 1.0e-6, min=1.0e-6))
+        means = self.lda_means[:seen_classes].float()
+        cholesky, info = torch.linalg.cholesky_ex(covariance)
+        if int(info.item()) == 0:
+            precision_means = torch.cholesky_solve(means.t(), cholesky).t()
+        else:
+            precision_means = means @ torch.linalg.pinv(covariance)
+        biases = -0.5 * (means * precision_means).sum(1)
+        if not torch.isfinite(precision_means).all() or not torch.isfinite(biases).all():
+            raise FloatingPointError("ATLAS-v2 LDA produced non-finite parameters")
+        self.lda_weight.zero_()
+        self.lda_bias.zero_()
+        self.lda_weight[:seen_classes].copy_(precision_means.to(self.lda_weight))
+        self.lda_bias[:seen_classes].copy_(biases.to(self.lda_bias))
+        self.lda_shrinkage.copy_(shrinkage.to(self.lda_shrinkage))
+        self.lda_fitted.fill_(True)
 
 
 class AtlasV2(ContinualModel):
@@ -730,6 +908,13 @@ class AtlasV2(ContinualModel):
         )
         self.replay_enabled = bool(args.atlasv2_replay)
         self.prototype_enabled = bool(args.atlasv2_prototype)
+        self.prototype_lda_enabled = bool(
+            getattr(args, "atlasv2_prototype_lda", False)
+        )
+        self.distribution_mode = str(
+            getattr(args, "atlasv2_distribution_mode", "legacy")
+        )
+        self.distribution_enabled = self.distribution_mode != "legacy"
         self.realign_enabled = bool(args.atlasv2_realign)
         self.prompt_enabled = bool(args.atlasv2_prompt)
         self.nce_enabled = bool(args.atlasv2_nce)
@@ -767,16 +952,48 @@ class AtlasV2(ContinualModel):
         if not self.prompt_enabled and prompt_anchors is not None:
             raise ValueError("Prompt anchors must be absent when the prompt branch is off")
 
+        class_task = []
+        for task, count in enumerate(args.task_num_classes):
+            class_task.extend([task] * int(count))
+        distribution_head = (
+            FrozenDistributionHead(
+                int(args.num_classes), int(classifier.in_features), class_task,
+                self.distribution_mode,
+                seed=int(getattr(args, "seed", 0) or 0) + 1009 * int(getattr(args, "fold", 0) or 0),
+                alpha=float(args.atlasv2_distribution_alpha),
+                rho=float(args.atlasv2_distribution_rho),
+                rank=int(args.atlasv2_distribution_rank),
+                clusters=int(args.atlasv2_distribution_clusters),
+                tau_multi=float(args.atlasv2_distribution_tau_multi),
+                beta=float(args.atlasv2_distribution_beta),
+                tau_task=float(args.atlasv2_distribution_tau_task),
+                ranpac_dim=int(args.atlasv2_ranpac_dim),
+                ranpac_ridge=float(args.atlasv2_ranpac_ridge),
+            )
+            if self.distribution_enabled else None
+        )
         network = AtlasV2Network(
             backbone, int(args.num_classes), int(classifier.in_features),
             self.prototype_enabled, prompt_anchors,
             float(args.atlasv2_prompt_fusion),
+            prototype_lda=self.prototype_lda_enabled,
+            distribution_head=distribution_head,
         )
         super().__init__(network, loss, args, transform)
         object.__setattr__(self, "_lora_modules", lora_modules)
         self.num_classes = int(args.num_classes)
         self.feature_dim = int(args.feature_dim)
         self.embedding_dim = int(classifier.in_features)
+        if (
+            self.distribution_enabled
+            and str(getattr(args, "backbone_model_id", "")) == FEATHER_MODEL_ID
+            and str(getattr(args, "backbone_revision", "")) == FEATHER_REVISION
+            and self.embedding_dim != 512
+        ):
+            raise ValueError(
+                "Pinned FEATHER must expose runtime slide_embedding_dim=512, "
+                f"got {self.embedding_dim}"
+            )
         self.task_num_classes = tuple(int(v) for v in args.task_num_classes)
         self.class_offsets = tuple(int(v) for v in args.class_offsets)
         self.task_order = tuple(str(v) for v in args.task_order)
@@ -804,6 +1021,7 @@ class AtlasV2(ContinualModel):
         self.old_class_count = 0
         self.seen_class_count = self.task_num_classes[0]
         self.memory_history: List[Dict[str, float | int]] = []
+        self.calibration_history: List[Dict[str, Any]] = []
         self._reset_optimizer()
 
     @property
@@ -951,10 +1169,10 @@ class AtlasV2(ContinualModel):
         return 1
 
     @torch.no_grad()
-    def _encode_loader(self, dataset) -> Dict[int, List[torch.Tensor]]:
+    def _encode_loader_object(self, source_loader) -> Dict[int, List[torch.Tensor]]:
         loader = DataLoader(
-            dataset.train_loader.dataset, batch_size=1, shuffle=False, num_workers=0,
-            collate_fn=dataset.train_loader.collate_fn,
+            source_loader.dataset, batch_size=1, shuffle=False, num_workers=0,
+            collate_fn=source_loader.collate_fn,
         )
         values: Dict[int, List[torch.Tensor]] = defaultdict(list)
         for batch in loader:
@@ -964,6 +1182,153 @@ class AtlasV2(ContinualModel):
             label = int(batch.labels.reshape(-1)[0])
             values[label].append(self.net.encode(features, coords, patch_size).cpu())
         return values
+
+    @torch.no_grad()
+    def _encode_loader(self, dataset) -> Dict[int, List[torch.Tensor]]:
+        return self._encode_loader_object(dataset.train_loader)
+
+    @torch.no_grad()
+    def _validation_cache(self, dataset) -> tuple[torch.Tensor, torch.Tensor]:
+        loaders = getattr(dataset, "val_loaders", None)
+        if not isinstance(loaders, list) or len(loaders) <= self.current_task:
+            raise RuntimeError("ATLAS distribution calibration requires retained validation loaders")
+        values, labels = [], []
+        for loader in loaders[: self.current_task + 1]:
+            encoded = self._encode_loader_object(loader)
+            for label in sorted(encoded):
+                class_values = torch.cat(encoded[label])
+                values.append(class_values)
+                labels.append(torch.full((class_values.shape[0],), label, dtype=torch.long))
+        if not values:
+            raise RuntimeError("ATLAS distribution calibration cache is empty")
+        return torch.cat(values).to(self.device), torch.cat(labels).to(self.device)
+
+    def _calibrate_distribution(self, dataset, current) -> None:
+        head = self.net.distribution_head
+        validation_raw, labels = self._validation_cache(dataset)
+        validation_norm = F.normalize(validation_raw, dim=1, eps=1.0e-8)
+        stages = {
+            "diag": ("diag",),
+            "diag_shrink": ("diag_shrink",),
+            "lowrank": ("lowrank",),
+            "task_centroid": ("diag_shrink", "task_centroid"),
+            "task_lme": ("diag_shrink", "task_lme"),
+            "multi": ("multi",),
+            "pt_only": ("diag_shrink",),
+            "atlas_tf": ("lowrank", "multi", "atlas_tf"),
+            "atlas_pt": ("lowrank", "multi", "atlas_tf"),
+            "ranpac": ("ranpac",),
+        }[self.distribution_mode]
+        selected = []
+        for stage in stages:
+            cache = validation_raw if stage == "ranpac" else validation_norm
+            if stage == "multi" and self.current_task == 0:
+                current_values = {
+                    label: torch.cat(current[label]).to(self.device)
+                    for label in range(*self._bounds(self.current_task))
+                }
+                original_mode = head.mode
+                best_key, best = None, None
+                for index, (clusters, tau) in enumerate(
+                    product((2, 3), (0.05, 0.1, 0.2))
+                ):
+                    head.refit_subprototypes(current_values, clusters)
+                    head.selected_clusters.fill_(clusters)
+                    head.selected_tau_multi.fill_(tau)
+                    head.mode = "multi"
+                    predictions = head.scores(cache).argmax(1)
+                    recalls = [
+                        (predictions[labels == label] == label).float().mean()
+                        for label in torch.unique(labels)
+                    ]
+                    metric = float(torch.stack(recalls).mean())
+                    key = (metric, -index)
+                    if best_key is None or key > best_key:
+                        best_key, best = key, (clusters, tau)
+                clusters, tau = best
+                head.refit_subprototypes(current_values, clusters)
+                head.selected_clusters.fill_(clusters)
+                head.selected_tau_multi.fill_(tau)
+                head.mode = original_mode
+                selected.append({
+                    "stage": "multi", "clusters": clusters,
+                    "tau_multi": tau, "validation_bacc": best_key[0],
+                    "candidate_count": 6,
+                })
+            elif stage == "multi":
+                selected.append({
+                    "stage": "multi", "locked_from_task": 0,
+                    "clusters": int(head.selected_clusters),
+                    "tau_multi": float(head.selected_tau_multi),
+                    "candidate_count": 0,
+                })
+            else:
+                selected.append({"stage": stage, **head.select(cache, labels, stage)})
+        self.calibration_history.append({
+            "distribution_state_version": DISTRIBUTION_STATE_VERSION,
+            "fold": int(getattr(self.args, "fold", 0) or 0),
+            "task": self.current_task,
+            "split": "validation",
+            "contains_test_cache": False,
+            "runtime_slide_embedding_dim": self.embedding_dim,
+            "stages": selected,
+        })
+
+    def _calibrate_prototype_tuning(self, dataset, current) -> None:
+        head = self.net.distribution_head
+        validation_raw, labels = self._validation_cache(dataset)
+        validation_norm = F.normalize(validation_raw, dim=1, eps=1.0e-8)
+        base_offset = head.class_offset.detach().clone()
+        best_key, best_offset, best_hp = None, None, None
+        candidates = [
+            (temperature, anchor, margin)
+            for temperature in (0.05, 0.1, 0.2)
+            for anchor in (0.01, 0.1, 1.0)
+            for margin in (0.0, 0.1)
+        ]
+        current_tensors = {
+            label: torch.cat(current[label]).to(self.device)
+            for label in range(*self._bounds(self.current_task))
+        }
+        for index, (temperature, anchor, margin_weight) in enumerate(candidates):
+            with torch.no_grad():
+                head.class_offset.copy_(base_offset)
+            head.tune_offsets(
+                current_tensors,
+                task=self.current_task,
+                steps=int(self.args.atlasv2_pt_steps),
+                learning_rate=float(self.args.atlasv2_pt_lr),
+                samples_per_class=int(self.args.atlasv2_pt_samples_per_class),
+                temperature=temperature,
+                anchor_weight=anchor,
+                margin_weight=margin_weight,
+                margin=float(self.args.atlasv2_pt_margin),
+            )
+            with torch.no_grad():
+                metric = float(
+                    sum(
+                        (head.scores(validation_norm).argmax(1)[labels == label] == label)
+                        .float().mean()
+                        for label in torch.unique(labels)
+                    ) / len(torch.unique(labels))
+                )
+            key = (metric, -index)
+            if best_key is None or key > best_key:
+                best_key = key
+                best_offset = head.class_offset.detach().clone()
+                best_hp = {
+                    "ce_temperature": temperature,
+                    "anchor_weight": anchor,
+                    "margin_weight": margin_weight,
+                }
+        with torch.no_grad():
+            head.class_offset.copy_(best_offset)
+        self.calibration_history[-1]["stages"].append({
+            "stage": "prototype_tuning",
+            **best_hp,
+            "validation_bacc": float(best_key[0]),
+            "candidate_count": len(candidates),
+        })
 
     @torch.no_grad()
     def _realign_old_prototypes(self) -> None:
@@ -988,13 +1353,37 @@ class AtlasV2(ContinualModel):
                     module.merge(self.merge_scale)
             if self.prototype_enabled:
                 current = self._encode_loader(dataset)
-                if self.realign_enabled and self.old_class_count:
+                if self.distribution_enabled:
+                    head = self.net.distribution_head
+                    start, stop = self._bounds(self.current_task)
+                    for label in range(start, stop):
+                        if not current[label]:
+                            raise RuntimeError(f"Current train split has no class {label}")
+                        embeddings = torch.cat(current[label]).to(self.device)
+                        head.fit_class(label, F.normalize(embeddings, dim=1, eps=1.0e-8))
+                    if self.distribution_mode == "ranpac":
+                        raw = torch.cat([torch.cat(current[label]) for label in range(start, stop)]).to(self.device)
+                        labels = torch.cat([
+                            torch.full((len(current[label]),), label, dtype=torch.long)
+                            for label in range(start, stop)
+                        ]).to(self.device)
+                        head.update_ranpac(raw, labels)
+                    self._calibrate_distribution(dataset, current)
+                    if self.distribution_mode in {"pt_only", "atlas_pt"}:
+                        self._calibrate_prototype_tuning(dataset, current)
+                elif self.realign_enabled and self.old_class_count:
                     self._realign_old_prototypes()
-                start, stop = self._bounds(self.current_task)
-                for label in range(start, stop):
-                    if not current[label]:
-                        raise RuntimeError(f"Current train split has no class {label}")
-                    self.net.set_prototype(label, torch.cat(current[label]))
+                if not self.distribution_enabled:
+                    start, stop = self._bounds(self.current_task)
+                    for label in range(start, stop):
+                        if not current[label]:
+                            raise RuntimeError(f"Current train split has no class {label}")
+                        embeddings = torch.cat(current[label])
+                        self.net.set_prototype(label, embeddings)
+                        if self.prototype_lda_enabled:
+                            self.net.update_lda_statistics(label, embeddings)
+                    if self.prototype_lda_enabled:
+                        self.net.fit_lda(stop)
         finally:
             self.net.train(was_training)
         self.completed_tasks = self.current_task + 1
@@ -1023,6 +1412,23 @@ class AtlasV2(ContinualModel):
                 x, coords, patch_size_level0, seen_classes=self.seen_class_count,
                 use_prototype=use_prototype,
             )
+
+    def forward_with_distribution_diagnostics(
+        self, x, coords=None, patch_size_level0=None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Single-encode evaluation path returning oracle-free soft task scores."""
+
+        use_prototype = self.prototype_enabled and self.completed_tasks > self.current_task
+        if isinstance(x, (list, tuple)):
+            values = x
+            x, coords, patch_size_level0 = values[0], values[1], values[2]
+        with self.autocast_context():
+            output = self.net.forward_with_embedding(
+                x, coords, patch_size_level0,
+                seen_classes=self.seen_class_count,
+                use_prototype=use_prototype,
+            )
+        return output["logits"], output["soft_task_scores"]
 
     def _config(self) -> Dict[str, Any]:
         config = {
@@ -1053,6 +1459,35 @@ class AtlasV2(ContinualModel):
             config["lora_strategy"] = "comel_owlora"
             config["comel_svd_energy"] = float(self.args.atlasv2_comel_svd_energy)
             config["comel_orthogonal_weight"] = self.comel_orthogonal_weight
+        if self.prototype_lda_enabled:
+            config["prototype_metric"] = "oas_shrinkage_lda"
+            config["prototype_fit_data"] = "train_only"
+            config["test_time_adaptation"] = False
+        if self.distribution_enabled:
+            head = self.net.distribution_head
+            config.update({
+                "distribution_state_version": DISTRIBUTION_STATE_VERSION,
+                "distribution_mode": self.distribution_mode,
+                "distribution_fit_data": "train_only_normalized_slide_embeddings",
+                "runtime_slide_embedding_dim": self.embedding_dim,
+                "expected_pinned_feather_embedding_dim": 512,
+                "raw_embedding_path": self.distribution_mode == "ranpac",
+                "test_time_adaptation": False,
+                "alpha": float(head.selected_alpha),
+                "rho": float(head.selected_rho),
+                "rank": int(head.selected_rank),
+                "clusters": int(head.selected_clusters),
+                "tau_multi": float(head.selected_tau_multi),
+                "beta": float(head.selected_beta),
+                "tau_task": float(head.selected_tau_task),
+            })
+            if self.distribution_mode == "ranpac":
+                config.update({
+                    "ranpac_projection_dim": int(head.selected_ranpac_dim),
+                    "ranpac_ridge": float(head.selected_ranpac_ridge),
+                    "ranpac_projection_grid": [2000, 5000, 10000],
+                    "ranpac_feature_path": "embedding_raw",
+                })
         return config
 
     def get_run_metadata(self) -> Dict[str, Any]:
@@ -1067,10 +1502,62 @@ class AtlasV2(ContinualModel):
                 json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest(),
             "replay_memory_accounting": accounting,
+            "prototype_metric_accounting": (
+                {
+                    "metric": "oas_shrinkage_lda",
+                    "train_samples": int(self.net.lda_counts.sum().item()),
+                    "within_class_degrees": int(self.net.lda_degrees.item()),
+                    "oas_shrinkage": float(self.net.lda_shrinkage.item()),
+                    "test_time_adaptation": False,
+                }
+                if self.prototype_lda_enabled else None
+            ),
+            "distribution_accounting": (
+                {
+                    **self.net.distribution_head.diagnostics(),
+                    "mode": self.distribution_mode,
+                    "stored_slide_embeddings": 0,
+                    "test_time_adaptation": False,
+                }
+                if self.distribution_enabled else None
+            ),
+            "calibration_manifest": (
+                list(self.calibration_history) if self.distribution_enabled else None
+            ),
+        }
+
+    def get_calibration_manifest(self) -> Dict[str, Any] | None:
+        if not self.distribution_enabled:
+            return None
+        return {
+            "distribution_state_version": DISTRIBUTION_STATE_VERSION,
+            "ablation_id": getattr(self.args, "ablation_id", None),
+            "fold": int(getattr(self.args, "fold", 0) or 0),
+            "runtime_slide_embedding_dim": self.embedding_dim,
+            "expected_pinned_feather_embedding_dim": 512,
+            "backbone_model_id": getattr(self.args, "backbone_model_id", None),
+            "backbone_revision": getattr(self.args, "backbone_revision", None),
+            "selection_protocol": "fold-specific isolated validation; staged non-Cartesian DAG",
+            "contains_train_embeddings": False,
+            "contains_validation_embeddings": False,
+            "contains_test_embeddings": False,
+            "history": list(self.calibration_history),
+        }
+
+    def get_task_diagnostics(self) -> Dict[str, Any] | None:
+        if not self.distribution_enabled:
+            return None
+        return {
+            "task": self.current_task,
+            **self.net.distribution_head.diagnostics(),
+            "selected_hyperparameters": json.dumps(
+                self.calibration_history[-1]["stages"] if self.calibration_history else [],
+                sort_keys=True,
+            ),
         }
 
     def get_checkpoint_state(self) -> Dict[str, Any]:
-        return {
+        state = {
             "version": CHECKPOINT_VERSION, "method": self.NAME,
             "config": self._config(), "task_order": list(self.task_order),
             "task_num_classes": list(self.task_num_classes),
@@ -1082,6 +1569,9 @@ class AtlasV2(ContinualModel):
             "memory_history": [dict(row) for row in self.memory_history],
             "memory": self.memory.state_dict() if self.memory is not None else None,
         }
+        if self.distribution_enabled:
+            state["calibration_history"] = list(self.calibration_history)
+        return state
 
     def load_checkpoint_state(self, state: Mapping[str, Any], strict: bool = True) -> None:
         expected = {
@@ -1117,6 +1607,11 @@ class AtlasV2(ContinualModel):
         if strict and len(history) != completed:
             raise ValueError("ATLAS-v2 checkpoint memory history is incomplete")
         self.memory_history = history
+        if self.distribution_enabled:
+            calibration = [dict(row) for row in state.get("calibration_history", [])]
+            if strict and len(calibration) != completed:
+                raise ValueError("ATLAS-v2 distribution checkpoint calibration history is incomplete")
+            self.calibration_history = calibration
         if self.comel_owlora_enabled:
             for module in self.lora_modules.values():
                 module.set_task(task)

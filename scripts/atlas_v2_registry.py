@@ -25,8 +25,21 @@ SETTING_IDS = (
     "atlasv2_replay_proto",
     "atlasv2_lora_proto",
     "atlasv2_base_lora_comel_owlora",
+    "atlasv2_frozen_proto_oas_lda",
+    "atlasv2_frozen_proto_diag",
+    "atlasv2_frozen_proto_diag_shrink",
+    "atlasv2_frozen_proto_lowrank",
+    "atlasv2_frozen_proto_task_centroid",
+    "atlasv2_frozen_proto_task_lme",
+    "atlasv2_frozen_proto_multi",
+    "atlasv2_frozen_proto_pt_only",
+    "atlasv2_frozen_atlas_tf",
+    "atlasv2_frozen_atlas_pt",
+    "atlasv2_frozen_ranpac",
 )
 COMEL_SETTING_ID = "atlasv2_base_lora_comel_owlora"
+FROZEN_PROTO_LDA_ID = "atlasv2_frozen_proto_oas_lda"
+DISTRIBUTION_SETTING_IDS = SETTING_IDS[-10:]
 PROTO_FACTORIAL_IDS = (
     "atlasv2_frozen_proto",
     "atlasv2_replay_proto",
@@ -137,6 +150,34 @@ def load_registry(path: str | Path) -> Dict[str, Any]:
     }
     if comel_differences != expected_comel:
         raise ValueError("ATLAS-v2 CoMEL OWLoRA must otherwise match base LoRA")
+    frozen_proto = variants["atlasv2_frozen_proto"]["overrides"]
+    frozen_proto_lda = variants[FROZEN_PROTO_LDA_ID]["overrides"]
+    lda_differences = {
+        key for key in set(frozen_proto) | set(frozen_proto_lda)
+        if frozen_proto.get(key) != frozen_proto_lda.get(key)
+    }
+    if lda_differences != {"atlasv2_prototype_lda"}:
+        raise ValueError(
+            "ATLAS-v2 OAS-LDA extension must otherwise match frozen prototypes"
+        )
+    expected_distribution_modes = {
+        setting.removeprefix("atlasv2_frozen_proto_"): setting
+        for setting in DISTRIBUTION_SETTING_IDS[:7]
+    }
+    expected_distribution_modes.update({
+        "atlas_tf": "atlasv2_frozen_atlas_tf",
+        "atlas_pt": "atlasv2_frozen_atlas_pt",
+        "ranpac": "atlasv2_frozen_ranpac",
+    })
+    for mode, variant_id in expected_distribution_modes.items():
+        overrides = variants[variant_id]["overrides"]
+        if overrides.get("atlasv2_distribution_mode") != mode:
+            raise ValueError(f"{variant_id} must select distribution mode {mode}")
+        if any(bool(overrides[field]) for field in (
+            "atlasv2_lora", "atlasv2_replay", "atlasv2_realign",
+            "atlasv2_prompt", "atlasv2_nce", "atlasv2_train_classifier",
+        )) or not bool(overrides["atlasv2_prototype"]):
+            raise ValueError(f"{variant_id} is not a frozen prototype-only setting")
     expected_cells = {
         "atlasv2_frozen_proto": (False, False, False),
         "atlasv2_replay_proto": (False, True, False),

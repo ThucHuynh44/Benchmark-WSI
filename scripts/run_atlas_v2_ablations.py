@@ -107,6 +107,8 @@ def resolved_audit(variant: Dict[str, Any], fold: int) -> str:
         f"LinearCE={'ON' if values['atlasv2_train_classifier'] else 'OFF'} "
         f"SVD_Orthogonal={'ON' if values.get('atlasv2_svd_orthogonal', False) else 'OFF'} "
         f"CoMEL={'ON' if values.get('atlasv2_comel_owlora', False) else 'OFF'}"
+        f" TrainLDA={'ON' if values.get('atlasv2_prototype_lda', False) else 'OFF'}"
+        f" Distribution={values.get('atlasv2_distribution_mode', 'legacy')}"
     )
 
 
@@ -118,6 +120,36 @@ def _read_keys(path: Path) -> Counter:
             (int(row["fold"]), int(row["after_task"]), int(row["eval_task"]))
             for row in csv.DictReader(handle)
         )
+
+
+def valid_calibration_manifest(
+    path: Path, variant: Dict[str, Any], fold: int, num_tasks: int,
+) -> bool:
+    mode = str(variant["overrides"].get("atlasv2_distribution_mode", "legacy"))
+    if mode == "legacy":
+        return True
+    if not path.is_file():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    history = payload.get("history")
+    return bool(
+        payload.get("distribution_state_version") == 1
+        and int(payload.get("fold", -1)) == int(fold)
+        and int(payload.get("runtime_slide_embedding_dim", -1)) == 512
+        and payload.get("contains_train_embeddings") is False
+        and payload.get("contains_validation_embeddings") is False
+        and payload.get("contains_test_embeddings") is False
+        and isinstance(history, list)
+        and len(history) == int(num_tasks)
+        and all(
+            entry.get("split") == "validation"
+            and entry.get("contains_test_cache") is False
+            for entry in history
+        )
+    )
 
 
 def inspect_run(registry: Dict[str, Any], variant: Dict[str, Any], fold: int) -> str:
@@ -137,6 +169,11 @@ def inspect_run(registry: Dict[str, Any], variant: Dict[str, Any], fold: int) ->
     ):
         return "mismatch"
     num_tasks = int(manifest.get("num_tasks", 10))
+    if not valid_calibration_manifest(
+        run_dir / f"evaluation/calibration/fold_{int(fold)}.json",
+        variant, fold, num_tasks,
+    ):
+        return "incomplete"
     expected = {
         (int(fold), after, evaluated)
         for after in range(num_tasks) for evaluated in range(after + 1)
@@ -195,6 +232,18 @@ def _add_selection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--gpus", default="")
 
 
+def _require_clean_worktree(allow_dirty: bool) -> None:
+    result = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=REPO_ROOT,
+        check=True, capture_output=True, text=True,
+    )
+    if result.stdout.strip() and not allow_dirty:
+        raise RuntimeError(
+            "ATLAS-v2 experimental runs require a clean Git worktree; "
+            "commit/freeze the code or pass --allow-dirty for development only"
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -205,6 +254,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     for name in ("dry-run", "run", "resume"):
         child = actions.add_parser(name)
         _add_selection_args(child)
+        if name in {"run", "resume"}:
+            child.add_argument("--allow-dirty", action="store_true")
         if name == "resume":
             child.add_argument("--rerun-incomplete", action="store_true")
     args = parser.parse_args(argv)
@@ -215,6 +266,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"variants={len(SETTING_IDS)}")
         return 0
 
+    if args.action in {"run", "resume"}:
+        _require_clean_worktree(bool(args.allow_dirty))
     variants = select_variants(registry, args.variants)
     folds = parse_folds(args.folds)
     jobs = []
