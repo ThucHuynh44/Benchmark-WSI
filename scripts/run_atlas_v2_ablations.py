@@ -232,18 +232,6 @@ def _add_selection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--gpus", default="")
 
 
-def _require_clean_worktree(allow_dirty: bool) -> None:
-    result = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=REPO_ROOT,
-        check=True, capture_output=True, text=True,
-    )
-    if result.stdout.strip() and not allow_dirty:
-        raise RuntimeError(
-            "ATLAS-v2 experimental runs require a clean Git worktree; "
-            "commit/freeze the code or pass --allow-dirty for development only"
-        )
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -255,7 +243,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         child = actions.add_parser(name)
         _add_selection_args(child)
         if name in {"run", "resume"}:
-            child.add_argument("--allow-dirty", action="store_true")
+            # Backward-compatible no-op: dirty worktrees are now allowed.
+            child.add_argument("--allow-dirty", action="store_true", help=argparse.SUPPRESS)
         if name == "resume":
             child.add_argument("--rerun-incomplete", action="store_true")
     args = parser.parse_args(argv)
@@ -266,8 +255,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"variants={len(SETTING_IDS)}")
         return 0
 
-    if args.action in {"run", "resume"}:
-        _require_clean_worktree(bool(args.allow_dirty))
     variants = select_variants(registry, args.variants)
     folds = parse_folds(args.folds)
     jobs = []

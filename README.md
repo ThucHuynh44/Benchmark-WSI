@@ -541,9 +541,8 @@ python scripts/run_atlas_v2_ablations.py dry-run \
   --folds 0
 ```
 
-Experimental `run`/`resume` commands require a clean Git worktree by default.
-`--allow-dirty` exists only for development smoke tests; manifests then include
-a source-diff hash.
+Experimental `run`/`resume` commands allow a dirty Git worktree. Manifests still
+record the commit and source-diff hash so runs remain traceable.
 
 ## Updates / TODOs
 Please follow this GitHub for more updates.

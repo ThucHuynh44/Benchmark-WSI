@@ -582,6 +582,7 @@ def evaluate(
             artifact_context["fold"], artifact_context["after_task"],
             artifact_context["after_task"], true_tasks, soft_tasks,
             np.arange(seen_task + 1),
+            "soft-task",
         )
         append_csv(
             artifact_context["distribution_eval_path"], [row],
