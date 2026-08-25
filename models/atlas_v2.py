@@ -1,9 +1,9 @@
 """ATLAS-v2: an explicit additive continual-learning ladder for FEATHER.
 
 The implementation intentionally does not import ATLAS-MIL components.  Its
-only mechanisms are standard task-wise LoRA, full-bag experience replay,
-slide-level prototypes, replay-based prototype realignment, and the optional
-prompt/NCE branch declared by the selected registry setting.
+only mechanisms are the explicitly selected LoRA strategy, full-bag experience
+replay, slide-level prototypes, replay-based prototype realignment, and the
+optional prompt/NCE branch declared by the selected registry setting.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from backbone.pretrained_mil import TITAN_MODEL_ID, TITAN_REVISION, _resolve_sna
 from configs.qpmil_vl_prompts import prompt_schema_hash, resolve_class_prompts
 from models.qpmil_vl import build_class_features
 from models.utils.continual_model import ContinualModel
+from models.utils.owlora import OWLoRAAdapter
 from models.utils.wsi_replay import unpack_prepared_batch
 from utils.args import add_experiment_args, add_management_args
 from utils.optim import build_optimizer
@@ -45,6 +46,9 @@ def get_parser() -> ArgumentParser:
     parser.add_argument("--atlasv2_lora_rank", type=int, default=8)
     parser.add_argument("--atlasv2_lora_alpha", type=float, default=8.0)
     parser.add_argument("--atlasv2_lora_merge_scale", type=float, default=1.0)
+    parser.add_argument("--atlasv2_svd_energy", type=float, default=0.99)
+    parser.add_argument("--atlasv2_comel_svd_energy", type=float, default=0.99)
+    parser.add_argument("--atlasv2_comel_orthogonal_weight", type=float, default=1.0)
     parser.add_argument("--atlasv2_prompt_fusion", type=float, default=0.5)
     parser.add_argument("--atlasv2_prompt_ce_weight", type=float, default=1.0)
     parser.add_argument("--atlasv2_nce_temperature", type=float, default=0.07)
@@ -53,6 +57,14 @@ def get_parser() -> ArgumentParser:
     parser.add_argument("--atlasv2_text_revision", type=str, default=TITAN_REVISION)
     for option, help_text in (
         ("atlasv2_lora", "Enable standard LoRA adapters."),
+        (
+            "atlasv2_svd_orthogonal",
+            "Track merged LoRA subspaces by SVD and project future updates orthogonally.",
+        ),
+        (
+            "atlasv2_comel_owlora",
+            "Use cumulative task adapters with CoMEL OWLoRA regularization/projection.",
+        ),
         ("atlasv2_replay", "Enable full-feature-bag experience replay."),
         ("atlasv2_prototype", "Use continual slide prototypes at inference."),
         ("atlasv2_realign", "Refresh old prototypes from replay at task boundaries."),
@@ -80,6 +92,8 @@ def validate_args(args) -> None:
         raise ValueError("ATLAS-v2 requires backbone_max_patches=0 (full bags)")
 
     lora = bool(getattr(args, "atlasv2_lora", False))
+    svd_orthogonal = bool(getattr(args, "atlasv2_svd_orthogonal", False))
+    comel_owlora = bool(getattr(args, "atlasv2_comel_owlora", False))
     replay = bool(getattr(args, "atlasv2_replay", False))
     prototype = bool(getattr(args, "atlasv2_prototype", False))
     realign = bool(getattr(args, "atlasv2_realign", False))
@@ -95,6 +109,12 @@ def validate_args(args) -> None:
         raise ValueError("ATLAS-v2 prompt extension requires the realigned core")
     if nce and not prompt:
         raise ValueError("ATLAS-v2 NCE requires the prompt branch")
+    if svd_orthogonal and not lora:
+        raise ValueError("ATLAS-v2 SVD-orthogonal adaptation requires LoRA")
+    if comel_owlora and not lora:
+        raise ValueError("ATLAS-v2 CoMEL OWLoRA adaptation requires LoRA")
+    if comel_owlora and svd_orthogonal:
+        raise ValueError("ATLAS-v2 CoMEL OWLoRA and SVD-orthogonal LoRA are exclusive")
     if int(getattr(args, "atlasv2_lora_rank", 0)) <= 0:
         raise ValueError("atlasv2_lora_rank must be positive")
     for name in (
@@ -109,6 +129,14 @@ def validate_args(args) -> None:
         raise ValueError("ATLAS-v2 prompt fusion is fixed at 0.5")
     if int(getattr(args, "minibatch_size", 1)) <= 0:
         raise ValueError("ATLAS-v2 minibatch_size must be positive")
+    svd_energy = float(getattr(args, "atlasv2_svd_energy", 0.99))
+    if not 0.0 < svd_energy <= 1.0:
+        raise ValueError("atlasv2_svd_energy must be in (0, 1]")
+    comel_energy = float(getattr(args, "atlasv2_comel_svd_energy", 0.99))
+    if not 0.0 < comel_energy < 1.0:
+        raise ValueError("atlasv2_comel_svd_energy must be in (0, 1)")
+    if float(getattr(args, "atlasv2_comel_orthogonal_weight", 1.0)) < 0.0:
+        raise ValueError("atlasv2_comel_orthogonal_weight must be non-negative")
 
 
 class StandardLoRALinear(nn.Module):
@@ -153,6 +181,184 @@ class StandardLoRALinear(nn.Module):
         self.reset_adapter()
 
 
+class SVDOrthogonalLoRALinear(StandardLoRALinear):
+    """Standard LoRA constrained to new output subspaces across tasks.
+
+    The forward path hard-projects ``B`` onto the orthogonal complement of the
+    left-singular basis accumulated from earlier merged updates. At a task
+    boundary, SVD extracts the smallest left subspace that explains the
+    configured energy of the projected update. The learned projected update is
+    merged exactly; SVD is used for subspace tracking, not rank compression.
+    """
+
+    def __init__(
+        self, linear: nn.Linear, rank: int, alpha: float, *,
+        max_basis_rank: int, energy_threshold: float,
+    ) -> None:
+        super().__init__(linear, rank, alpha)
+        self.max_basis_rank = min(int(max_basis_rank), self.out_features)
+        self.energy_threshold = float(energy_threshold)
+        if self.max_basis_rank <= 0:
+            raise ValueError("SVD-orthogonal LoRA basis capacity must be positive")
+        if not 0.0 < self.energy_threshold <= 1.0:
+            raise ValueError("SVD-orthogonal LoRA energy must be in (0, 1]")
+        self.register_buffer(
+            "svd_basis", self.weight.new_zeros(self.out_features, self.max_basis_rank)
+        )
+        self.register_buffer("svd_basis_rank", torch.zeros((), dtype=torch.long))
+
+    def historical_basis(self) -> torch.Tensor:
+        return self.svd_basis[:, : int(self.svd_basis_rank)]
+
+    def projected_lora_b(self) -> torch.Tensor:
+        basis = self.historical_basis().to(self.lora_b)
+        if basis.numel() == 0:
+            return self.lora_b
+        return self.lora_b - basis @ (basis.t() @ self.lora_b)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        base = F.linear(inputs, self.weight, self.bias)
+        source = inputs.to(self.lora_a.dtype)
+        update = F.linear(F.linear(source, self.lora_a), self.projected_lora_b())
+        return base + (self.scaling * update).to(base.dtype)
+
+    @torch.no_grad()
+    def merge(self, scale: float = 1.0) -> None:
+        projected_b = self.projected_lora_b().float()
+        delta = self.scaling * (projected_b @ self.lora_a.detach().float())
+        if not torch.isfinite(delta).all():
+            raise FloatingPointError("SVD-orthogonal LoRA produced a non-finite update")
+        self.weight.add_((float(scale) * delta).to(self.weight))
+
+        energy = delta.square().sum()
+        if float(energy) > torch.finfo(delta.dtype).eps:
+            u, singular, _ = torch.linalg.svd(delta, full_matrices=False)
+            ratios = singular.square().cumsum(0) / singular.square().sum()
+            matches = torch.nonzero(
+                ratios >= self.energy_threshold, as_tuple=False
+            )
+            retained = (
+                int(matches[0].item() + 1)
+                if matches.numel() else int(singular.numel())
+            )
+            old = self.historical_basis().float()
+            candidates = torch.cat((old, u[:, :retained]), dim=1)
+            basis, _ = torch.linalg.qr(candidates, mode="reduced")
+            kept = min(int(basis.shape[1]), self.max_basis_rank)
+            self.svd_basis.zero_()
+            self.svd_basis[:, :kept].copy_(basis[:, :kept].to(self.svd_basis))
+            self.svd_basis_rank.fill_(kept)
+        self.reset_adapter()
+
+
+class CoMELOWLoRALinear(nn.Module):
+    """Frozen SVD-truncated Linear plus cumulative CoMEL OWLoRA adapters.
+
+    Adapter zero in ``reference`` is a frozen source-style subspace used only
+    by gradient projection.  A distinct weighted adapter is preallocated for
+    every task, while only the active task adapter is trainable and included
+    together with completed adapters in the forward path.
+    """
+
+    def __init__(
+        self, linear: nn.Linear, rank: int, n_tasks: int, energy_threshold: float,
+    ) -> None:
+        super().__init__()
+        if int(rank) <= 0 or int(n_tasks) <= 0:
+            raise ValueError("CoMEL OWLoRA rank and number of tasks must be positive")
+        if not 0.0 < float(energy_threshold) < 1.0:
+            raise ValueError("CoMEL OWLoRA SVD energy must be in (0, 1)")
+        self.in_features = int(linear.in_features)
+        self.out_features = int(linear.out_features)
+        self.rank = int(rank)
+        self.n_tasks = int(n_tasks)
+        self.energy_threshold = float(energy_threshold)
+
+        weight = linear.weight.detach().float()
+        if not torch.isfinite(weight).all():
+            raise FloatingPointError("Cannot initialize CoMEL OWLoRA from non-finite weights")
+        u, singular, vh = torch.linalg.svd(weight, full_matrices=False)
+        squared = singular.square()
+        total = squared.sum()
+        if not torch.isfinite(total) or float(total) <= 0.0:
+            raise ValueError("Cannot initialize CoMEL OWLoRA from a zero-energy weight")
+        ratios = squared.cumsum(0) / total
+        matches = torch.nonzero(ratios > self.energy_threshold, as_tuple=False)
+        retained = int(matches[0].item() + 1) if matches.numel() else int(singular.numel())
+        truncated = (u[:, :retained] * singular[:retained]) @ vh[:retained]
+
+        self.weight = nn.Parameter(truncated.to(linear.weight), requires_grad=False)
+        self.bias = (
+            nn.Parameter(linear.bias.detach().clone(), requires_grad=False)
+            if linear.bias is not None else None
+        )
+        self.reference = OWLoRAAdapter(
+            self.in_features, self.out_features, retained,
+            device=linear.weight.device, dtype=linear.weight.dtype,
+        )
+        self.task_adapters = nn.ModuleList([
+            OWLoRAAdapter(
+                self.in_features, self.out_features, self.rank,
+                device=linear.weight.device, dtype=linear.weight.dtype,
+            )
+            for _ in range(self.n_tasks)
+        ])
+        self.register_buffer("active_task", torch.zeros((), dtype=torch.long))
+        self.set_task(0)
+        self.train(linear.training)
+
+    def set_task(self, task: int) -> None:
+        task = int(task)
+        if not 0 <= task < self.n_tasks:
+            raise ValueError(f"CoMEL OWLoRA task {task} is outside 0..{self.n_tasks - 1}")
+        self.active_task.fill_(task)
+        self.reference.requires_grad_(False)
+        for index, adapter in enumerate(self.task_adapters):
+            adapter.requires_grad_(index == task)
+
+    def current_adapter(self) -> OWLoRAAdapter:
+        return self.task_adapters[int(self.active_task.item())]
+
+    def historical_adapters(self) -> Tuple[OWLoRAAdapter, ...]:
+        task = int(self.active_task.item())
+        return (self.reference, *tuple(self.task_adapters[:task]))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        output = F.linear(inputs, self.weight, self.bias)
+        stop = int(self.active_task.item()) + 1
+        for adapter in self.task_adapters[:stop]:
+            output = output + adapter(inputs)
+        return output
+
+    def orthogonality_penalty(self) -> torch.Tensor:
+        current = self.current_adapter()
+        down, up = current.down.weight, current.up.weight
+        identity = torch.eye(current.rank, device=down.device, dtype=down.dtype)
+        return (
+            (down @ down.t() - identity).square().sum()
+            + (up.t() @ up - identity).square().sum()
+        ) / float(current.rank ** 2)
+
+    @torch.no_grad()
+    def project_current_gradients(self) -> None:
+        current = self.current_adapter()
+        historical = self.historical_adapters()
+        down_grad = current.down.weight.grad
+        if down_grad is not None:
+            projection = torch.zeros_like(down_grad)
+            for old in historical:
+                old_down = old.down.weight.detach()
+                projection.add_((down_grad @ old_down.t()) @ old_down)
+            down_grad.sub_(projection)
+        up_grad = current.up.weight.grad
+        if up_grad is not None:
+            projection = torch.zeros_like(up_grad)
+            for old in historical:
+                old_up = old.up.weight.detach()
+                projection.add_(old_up @ (old_up.t() @ up_grad))
+            up_grad.sub_(projection)
+
+
 def _linear_references(
     root: nn.Module, excluded: Iterable[nn.Module]
 ) -> Dict[int, Tuple[nn.Linear, List[Tuple[nn.Module, str, str]]]]:
@@ -178,19 +384,54 @@ def _linear_references(
 
 
 def attach_standard_lora(
-    root: nn.Module, classifier: nn.Module, rank: int, alpha: float
+    root: nn.Module, classifier: nn.Module, rank: int, alpha: float, *,
+    svd_orthogonal: bool = False, n_tasks: int = 1,
+    svd_energy: float = 0.99,
 ) -> "OrderedDict[str, StandardLoRALinear]":
     attached: Dict[int, Tuple[str, StandardLoRALinear]] = {}
     for linear, aliases in _linear_references(root, (classifier,)).values():
         if rank > min(linear.in_features, linear.out_features):
             continue
-        wrapped = StandardLoRALinear(linear, rank, alpha)
+        wrapped = (
+            SVDOrthogonalLoRALinear(
+                linear, rank, alpha,
+                max_basis_rank=int(rank) * int(n_tasks),
+                energy_threshold=float(svd_energy),
+            )
+            if svd_orthogonal
+            else StandardLoRALinear(linear, rank, alpha)
+        )
         for parent, name, path in aliases:
             setattr(parent, name, wrapped)
             if id(wrapped) not in attached or path < attached[id(wrapped)][0]:
                 attached[id(wrapped)] = (path, wrapped)
     if not attached:
         raise ValueError("ATLAS-v2 found no FEATHER Linear eligible for LoRA")
+    return OrderedDict(sorted(attached.values()))
+
+
+def attach_comel_owlora(
+    root: nn.Module, classifier: nn.Module, rank: int, n_tasks: int,
+    energy_threshold: float,
+) -> "OrderedDict[str, CoMELOWLoRALinear]":
+    """Attach the CoMEL rank convention while preserving shared aliases."""
+
+    attached: Dict[int, Tuple[str, CoMELOWLoRALinear]] = {}
+    for linear, aliases in _linear_references(root, (classifier,)).values():
+        adapter_rank = (
+            3 * int(rank)
+            if any("qkv" in path.lower() for _, _, path in aliases)
+            else int(rank)
+        )
+        wrapped = CoMELOWLoRALinear(
+            linear, adapter_rank, int(n_tasks), float(energy_threshold)
+        )
+        for parent, name, path in aliases:
+            setattr(parent, name, wrapped)
+            if id(wrapped) not in attached or path < attached[id(wrapped)][0]:
+                attached[id(wrapped)] = (path, wrapped)
+    if not attached:
+        raise ValueError("ATLAS-v2 found no FEATHER Linear eligible for CoMEL OWLoRA")
     return OrderedDict(sorted(attached.values()))
 
 
@@ -481,6 +722,12 @@ class AtlasV2(ContinualModel):
         if not isinstance(classifier, nn.Linear):
             raise TypeError("ATLAS-v2 requires a linear FEATHER classifier")
         self.lora_enabled = bool(args.atlasv2_lora)
+        self.svd_orthogonal_enabled = bool(
+            getattr(args, "atlasv2_svd_orthogonal", False)
+        )
+        self.comel_owlora_enabled = bool(
+            getattr(args, "atlasv2_comel_owlora", False)
+        )
         self.replay_enabled = bool(args.atlasv2_replay)
         self.prototype_enabled = bool(args.atlasv2_prototype)
         self.realign_enabled = bool(args.atlasv2_realign)
@@ -490,15 +737,30 @@ class AtlasV2(ContinualModel):
 
         lora_modules = {}
         if self.lora_enabled:
-            lora_modules = attach_standard_lora(
-                backbone.model, classifier, int(args.atlasv2_lora_rank),
-                float(args.atlasv2_lora_alpha),
+            lora_modules = (
+                attach_comel_owlora(
+                    backbone.model, classifier, int(args.atlasv2_lora_rank),
+                    int(args.n_tasks),
+                    float(getattr(args, "atlasv2_comel_svd_energy", 0.99)),
+                )
+                if self.comel_owlora_enabled
+                else attach_standard_lora(
+                    backbone.model, classifier, int(args.atlasv2_lora_rank),
+                    float(args.atlasv2_lora_alpha),
+                    svd_orthogonal=self.svd_orthogonal_enabled,
+                    n_tasks=int(args.n_tasks),
+                    svd_energy=float(getattr(args, "atlasv2_svd_energy", 0.99)),
+                )
             )
         for parameter in backbone.parameters():
             parameter.requires_grad_(False)
-        for module in lora_modules.values():
-            module.lora_a.requires_grad_(True)
-            module.lora_b.requires_grad_(True)
+        if self.comel_owlora_enabled:
+            for module in lora_modules.values():
+                module.set_task(0)
+        else:
+            for module in lora_modules.values():
+                module.lora_a.requires_grad_(True)
+                module.lora_b.requires_grad_(True)
         classifier.requires_grad_(self.train_classifier)
         if self.prompt_enabled and prompt_anchors is None:
             raise ValueError("ATLAS-v2 prompt setting requires fixed text embeddings")
@@ -530,6 +792,9 @@ class AtlasV2(ContinualModel):
         self.nce_temperature = float(args.atlasv2_nce_temperature)
         self.nce_weight = float(args.atlasv2_nce_weight)
         self.merge_scale = float(args.atlasv2_lora_merge_scale)
+        self.comel_orthogonal_weight = float(
+            getattr(args, "atlasv2_comel_orthogonal_weight", 1.0)
+        )
         self.prompt_hash = (
             prompt_schema_hash(self.task_order, self.task_num_classes)
             if self.prompt_enabled else None
@@ -542,7 +807,7 @@ class AtlasV2(ContinualModel):
         self._reset_optimizer()
 
     @property
-    def lora_modules(self) -> Mapping[str, StandardLoRALinear]:
+    def lora_modules(self) -> Mapping[str, nn.Module]:
         return self.__dict__["_lora_modules"]
 
     def _validate_layout(self) -> None:
@@ -576,6 +841,9 @@ class AtlasV2(ContinualModel):
             raise RuntimeError("ATLAS-v2 tasks must be learned sequentially")
         self.current_task = task
         self.old_class_count, self.seen_class_count = self._bounds(task)
+        if self.comel_owlora_enabled:
+            for module in self.lora_modules.values():
+                module.set_task(task)
         self._reset_optimizer()
 
     def _unpack(self, batch):
@@ -631,21 +899,33 @@ class AtlasV2(ContinualModel):
         loss_linear = torch.stack(linear_losses).mean() if linear_losses else zero
         loss_prompt = torch.stack(prompt_losses).mean() if prompt_losses else zero
         loss_nce = torch.stack(nce_losses).mean() if nce_losses else zero
+        loss_comel = (
+            torch.stack([
+                module.orthogonality_penalty()
+                for module in self.lora_modules.values()
+            ]).sum()
+            if self.comel_owlora_enabled else zero
+        )
         loss = (
             loss_linear + self.prompt_ce_weight * loss_prompt
             + self.nce_weight * loss_nce
+            + self.comel_orthogonal_weight * loss_comel
         )
         if not torch.isfinite(loss):
             raise FloatingPointError("ATLAS-v2 produced a non-finite loss")
         self.opt.zero_grad(set_to_none=True)
         if loss.requires_grad:
             loss.backward()
+            if self.comel_owlora_enabled:
+                for module in self.lora_modules.values():
+                    module.project_current_gradients()
             self.opt.step()
         return {
             "loss": float(loss.detach()),
             "loss_cls": float(loss_linear.detach()),
             "loss_prompt": float(loss_prompt.detach()),
             "loss_atlas_nce": float(loss_nce.detach()),
+            "loss_comel_orthogonal": float(loss_comel.detach()),
             "replay_bags": float(len(replay_entries)),
             "buffer_size": float(len(self.memory) if self.memory is not None else 0),
         }
@@ -703,7 +983,7 @@ class AtlasV2(ContinualModel):
         was_training = self.net.training
         self.net.eval()
         try:
-            if self.lora_enabled:
+            if self.lora_enabled and not self.comel_owlora_enabled:
                 for module in self.lora_modules.values():
                     module.merge(self.merge_scale)
             if self.prototype_enabled:
@@ -745,7 +1025,7 @@ class AtlasV2(ContinualModel):
             )
 
     def _config(self) -> Dict[str, Any]:
-        return {
+        config = {
             "version": CHECKPOINT_VERSION,
             "backbone": "feather",
             "lora": self.lora_enabled, "replay": self.replay_enabled,
@@ -764,6 +1044,16 @@ class AtlasV2(ContinualModel):
             "ablation_id": getattr(self.args, "ablation_id", None),
             "ablation_config_hash": getattr(self.args, "ablation_config_hash", None),
         }
+        # Preserve checkpoint/run metadata for pre-existing settings. Only
+        # opt-in LoRA strategy/geometry extensions receive additional keys.
+        if self.svd_orthogonal_enabled:
+            config["svd_orthogonal"] = True
+            config["svd_energy"] = float(self.args.atlasv2_svd_energy)
+        if self.comel_owlora_enabled:
+            config["lora_strategy"] = "comel_owlora"
+            config["comel_svd_energy"] = float(self.args.atlasv2_comel_svd_energy)
+            config["comel_orthogonal_weight"] = self.comel_orthogonal_weight
+        return config
 
     def get_run_metadata(self) -> Dict[str, Any]:
         config = self._config()
@@ -827,6 +1117,9 @@ class AtlasV2(ContinualModel):
         if strict and len(history) != completed:
             raise ValueError("ATLAS-v2 checkpoint memory history is incomplete")
         self.memory_history = history
+        if self.comel_owlora_enabled:
+            for module in self.lora_modules.values():
+                module.set_task(task)
         self._reset_optimizer()
 
 

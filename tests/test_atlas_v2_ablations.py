@@ -5,7 +5,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from scripts.atlas_v2_registry import MECHANISM_FIELDS, PAIRWISE, SETTING_IDS, load_registry
+from scripts.atlas_v2_registry import (
+    COMEL_SETTING_ID, MECHANISM_FIELDS, PAIRWISE, PROTO_FACTORIAL_IDS,
+    SETTING_IDS, load_registry,
+)
 from scripts.run_atlas_v2_ablations import PILOT_VARIANTS, build_command, main as run_main
 from scripts.summarize_atlas_v2_ablations import METRICS, markdown, main as summary_main
 
@@ -15,12 +18,12 @@ REGISTRY = ROOT / "configs/atlas_v2_ablations.yaml"
 
 
 class RegistryTests(unittest.TestCase):
-    def test_exactly_eight_unique_settings_and_hashes(self):
+    def test_all_unique_settings_and_hashes(self):
         registry = load_registry(REGISTRY)
         self.assertEqual(tuple(registry["variants"]), SETTING_IDS)
         hashes = [entry["config_hash"] for entry in registry["variants"].values()]
-        self.assertEqual(len(hashes), 8)
-        self.assertEqual(len(set(hashes)), 8)
+        self.assertEqual(len(hashes), len(SETTING_IDS))
+        self.assertEqual(len(set(hashes)), len(SETTING_IDS))
         for variant in registry["variants"].values():
             overrides = variant["overrides"]
             self.assertTrue(all(field in overrides for field in MECHANISM_FIELDS))
@@ -50,11 +53,45 @@ class RegistryTests(unittest.TestCase):
             "atlasv2_frozen_proto": (False, False, True, False, False, False, 0),
             "atlasv2_lora_replay_proto_realign_prompt": (True, True, True, True, True, False, 30),
             "atlasv2_lora_replay_proto_realign_prompt_nce": (True, True, True, True, True, True, 30),
+            "atlasv2_base_lora_svd_orthogonal": (True, False, False, False, False, False, 0),
+            "atlasv2_replay_proto": (False, True, True, False, False, False, 30),
+            "atlasv2_lora_proto": (True, False, True, False, False, False, 0),
+            "atlasv2_base_lora_comel_owlora": (True, False, False, False, False, False, 0),
         }
         for variant_id, values in expected.items():
             overrides = variants[variant_id]["overrides"]
             actual = tuple(overrides[field] for field in MECHANISM_FIELDS) + (overrides["buffer_size"],)
             self.assertEqual(actual, values)
+        geometry = variants["atlasv2_base_lora_svd_orthogonal"]["overrides"]
+        self.assertTrue(geometry["atlasv2_svd_orthogonal"])
+        self.assertEqual(geometry["atlasv2_svd_energy"], 0.99)
+        comel = variants[COMEL_SETTING_ID]["overrides"]
+        self.assertTrue(comel["atlasv2_comel_owlora"])
+        self.assertEqual(comel["atlasv2_comel_svd_energy"], 0.99)
+        self.assertEqual(comel["atlasv2_comel_orthogonal_weight"], 1.0)
+
+    def test_prototype_replay_lora_factorial_has_all_four_cells(self):
+        variants = load_registry(REGISTRY)["variants"]
+        expected = {
+            "atlasv2_frozen_proto": (False, False, False),
+            "atlasv2_replay_proto": (False, True, False),
+            "atlasv2_lora_proto": (True, False, True),
+            "atlasv2_lora_replay_proto": (True, True, True),
+        }
+        self.assertEqual(set(PROTO_FACTORIAL_IDS), set(expected))
+        for variant_id, cell in expected.items():
+            overrides = variants[variant_id]["overrides"]
+            self.assertEqual(
+                (
+                    overrides["atlasv2_lora"], overrides["atlasv2_replay"],
+                    overrides["atlasv2_train_classifier"],
+                ),
+                cell,
+            )
+            self.assertTrue(overrides["atlasv2_prototype"])
+            self.assertFalse(overrides["atlasv2_realign"])
+            self.assertFalse(overrides["atlasv2_prompt"])
+            self.assertFalse(overrides["atlasv2_nce"])
 
     def test_commands_use_separate_result_tree_and_full_bag_flags(self):
         registry = load_registry(REGISTRY)
@@ -76,7 +113,10 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("commands=18", output)
         self.assertEqual(output.count("variant="), 18)
-        for field in ("LoRA=", "Replay=", "buffer=", "full_bag=", "Prototype=", "Realignment=", "Prompt=", "NCE="):
+        for field in (
+            "LoRA=", "Replay=", "buffer=", "full_bag=", "Prototype=",
+            "Realignment=", "Prompt=", "NCE=", "LinearCE=", "CoMEL=",
+        ):
             self.assertEqual(output.count(field), 18)
         self.assertNotIn("atlasv2_lora_replay_proto_realign_prompt fold=", output)
 
@@ -97,6 +137,14 @@ class SummaryTests(unittest.TestCase):
         self.assertIn("# ATLAS-v2 Additive Ladder", rendered)
         self.assertIn("# ATLAS-v2 Frozen Baseline", rendered)
         self.assertIn("# ATLAS-v2 Semantic Extensions", rendered)
+        self.assertIn("# ATLAS-v2 LoRA Geometry Extension", rendered)
+        self.assertIn("# ATLAS-v2 CoMEL LoRA Strategy", rendered)
+        self.assertIn("# ATLAS-v2 Prototype LoRA × Replay Factorial", rendered)
+        factorial = rendered.split(
+            "# ATLAS-v2 Prototype LoRA × Replay Factorial", 1
+        )[1]
+        positions = [factorial.index(f"| {variant_id} |") for variant_id in PROTO_FACTORIAL_IDS]
+        self.assertEqual(positions, sorted(positions))
         ladder = rendered.split("# ATLAS-v2 Additive Ladder", 1)[1].split("# ATLAS-v2 Frozen", 1)[0]
         positions = [ladder.index(f"| {variant_id} |") for variant_id in SETTING_IDS[:5]]
         self.assertEqual(positions, sorted(positions))

@@ -80,7 +80,7 @@ common:
   csv_log: true
 
   # Ghi train loss vào results/tensorboard_runs để xem bằng TensorBoard.
-  tensorboard: true
+  tensorboard: false
 
 backbones:
   generic_mil:

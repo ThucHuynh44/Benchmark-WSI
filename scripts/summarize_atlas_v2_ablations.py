@@ -17,7 +17,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.atlas_v2_registry import SETTING_IDS, load_registry
+from scripts.atlas_v2_registry import (
+    COMEL_SETTING_ID, PROTO_FACTORIAL_IDS, SETTING_IDS, load_registry,
+)
 from scripts.build_cl_table import _read_eval_matrix, _rows_by_key, _sequential_fold_metrics
 from scripts.run_atlas_v2_ablations import experiment_desc, inspect_run
 
@@ -140,6 +142,9 @@ def markdown(summaries: Sequence[dict]) -> str:
     lines.extend(table("ATLAS-v2 Additive Ladder", SETTING_IDS[:5]))
     lines.extend(table("ATLAS-v2 Frozen Baseline", (SETTING_IDS[5],)))
     lines.extend(table("ATLAS-v2 Semantic Extensions", (SETTING_IDS[4], SETTING_IDS[6], SETTING_IDS[7])))
+    lines.extend(table("ATLAS-v2 LoRA Geometry Extension", (SETTING_IDS[8],)))
+    lines.extend(table("ATLAS-v2 CoMEL LoRA Strategy", (COMEL_SETTING_ID,)))
+    lines.extend(table("ATLAS-v2 Prototype LoRA × Replay Factorial", PROTO_FACTORIAL_IDS))
     return "\n".join(lines)
 
 
@@ -170,7 +175,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     _write_csv(output / "atlas_v2_summary.csv", summaries, summary_fields)
     (output / "atlas_v2_tables.md").write_text(markdown(summaries), encoding="utf-8")
     incomplete = [row for row in summaries if row["status"] != "complete"]
-    print(f"Wrote 8 ATLAS-v2 settings to {output}; incomplete={len(incomplete)}")
+    print(
+        f"Wrote {len(SETTING_IDS)} ATLAS-v2 settings to {output}; "
+        f"incomplete={len(incomplete)}"
+    )
     return int(bool(args.strict and incomplete))
 
 

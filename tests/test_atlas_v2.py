@@ -10,8 +10,9 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from models.atlas_v2 import (
-    FullBagReplayBuffer, StandardLoRALinear, build_model_from_components,
-    validate_args,
+    CoMELOWLoRALinear, FullBagReplayBuffer, SVDOrthogonalLoRALinear,
+    StandardLoRALinear,
+    build_model_from_components, get_parser, validate_args,
 )
 
 
@@ -57,6 +58,9 @@ def args(**overrides):
         atlasv2_realign=False, atlasv2_prompt=False, atlasv2_nce=False,
         atlasv2_train_classifier=True, atlasv2_lora_rank=2,
         atlasv2_lora_alpha=2.0, atlasv2_lora_merge_scale=1.0,
+        atlasv2_svd_orthogonal=False, atlasv2_svd_energy=0.99,
+        atlasv2_comel_owlora=False, atlasv2_comel_svd_energy=0.99,
+        atlasv2_comel_orthogonal_weight=1.0,
         atlasv2_prompt_fusion=0.5, atlasv2_prompt_ce_weight=1.0,
         atlasv2_nce_temperature=0.07, atlasv2_nce_weight=1.0,
         atlasv2_text_model_id="fixed", atlasv2_text_revision="fixed",
@@ -134,6 +138,78 @@ class LoRATests(unittest.TestCase):
         self.assertEqual(torch.count_nonzero(layer.lora_b), 0)
         self.assertFalse(layer.weight.requires_grad)
 
+    def test_svd_basis_projects_future_update_and_merge_is_exact(self):
+        torch.manual_seed(14)
+        layer = SVDOrthogonalLoRALinear(
+            nn.Linear(5, 4, bias=False), rank=2, alpha=2.0,
+            max_basis_rank=4, energy_threshold=0.99,
+        )
+        with torch.no_grad():
+            layer.lora_a.normal_()
+            layer.lora_b.normal_()
+        layer.merge()
+        old_basis = layer.historical_basis().clone()
+        self.assertGreater(old_basis.shape[1], 0)
+        self.assertTrue(torch.allclose(
+            old_basis.t() @ old_basis,
+            torch.eye(old_basis.shape[1]), atol=1e-5,
+        ))
+
+        with torch.no_grad():
+            layer.lora_a.normal_()
+            layer.lora_b.normal_()
+        projected_delta = layer.projected_lora_b() @ layer.lora_a
+        self.assertTrue(torch.allclose(
+            old_basis.t() @ projected_delta,
+            torch.zeros(old_basis.shape[1], projected_delta.shape[1]),
+            atol=1e-5,
+        ))
+        inputs = torch.randn(7, 5)
+        before = layer(inputs)
+        layer.merge()
+        after = layer(inputs)
+        self.assertTrue(torch.allclose(before, after, atol=1e-5))
+
+    def test_comel_owlora_is_cumulative_and_projects_current_gradients(self):
+        torch.manual_seed(22)
+        layer = CoMELOWLoRALinear(
+            nn.Linear(5, 4, bias=False), rank=2, n_tasks=2,
+            energy_threshold=0.99,
+        )
+        self.assertFalse(layer.weight.requires_grad)
+        self.assertTrue(all(p.requires_grad for p in layer.task_adapters[0].parameters()))
+        self.assertTrue(all(not p.requires_grad for p in layer.task_adapters[1].parameters()))
+        with torch.no_grad():
+            layer.task_adapters[0].up.weight.normal_()
+            layer.task_adapters[1].up.weight.normal_()
+        inputs = torch.randn(3, 5)
+        task0_output = layer(inputs)
+        layer.set_task(1)
+        task1_output = layer(inputs)
+        expected = task0_output + layer.task_adapters[1](inputs)
+        self.assertTrue(torch.allclose(task1_output, expected, atol=1e-6))
+        self.assertTrue(all(not p.requires_grad for p in layer.task_adapters[0].parameters()))
+        self.assertTrue(all(p.requires_grad for p in layer.task_adapters[1].parameters()))
+        self.assertTrue(torch.isfinite(layer.orthogonality_penalty()))
+
+        current = layer.current_adapter()
+        current.down.weight.grad = torch.randn_like(current.down.weight)
+        current.up.weight.grad = torch.randn_like(current.up.weight)
+        down_before = current.down.weight.grad.clone()
+        up_before = current.up.weight.grad.clone()
+        historical = layer.historical_adapters()
+        expected_down = down_before - sum(
+            (down_before @ old.down.weight.detach().t()) @ old.down.weight.detach()
+            for old in historical
+        )
+        expected_up = up_before - sum(
+            old.up.weight.detach() @ (old.up.weight.detach().t() @ up_before)
+            for old in historical
+        )
+        layer.project_current_gradients()
+        self.assertTrue(torch.allclose(current.down.weight.grad, expected_down))
+        self.assertTrue(torch.allclose(current.up.weight.grad, expected_up))
+
 
 class FullBagReplayTests(unittest.TestCase):
     def test_capacity_balance_full_bags_and_checkpoint(self):
@@ -168,6 +244,14 @@ class FullBagReplayTests(unittest.TestCase):
 
 
 class AtlasV2Tests(unittest.TestCase):
+    def test_parser_exposes_comel_strategy_defaults(self):
+        parsed = get_parser().parse_args([
+            "--dataset", "seq-wsi", "--exp_desc", "test", "--model", "atlas_v2",
+        ])
+        self.assertFalse(parsed.atlasv2_comel_owlora)
+        self.assertEqual(parsed.atlasv2_comel_svd_energy, 0.99)
+        self.assertEqual(parsed.atlasv2_comel_orthogonal_weight, 1.0)
+
     def test_production_validation_rejects_hidden_or_invalid_coupling(self):
         baseline = args(feature_dim=768)
         validate_args(baseline)
@@ -176,6 +260,13 @@ class AtlasV2Tests(unittest.TestCase):
             {"backbone_max_patches": 1},
             {"atlasv2_replay": True, "buffer_size": 29},
             {"atlasv2_realign": True}, {"atlasv2_nce": True},
+            {"atlasv2_comel_owlora": True},
+            {
+                "atlasv2_lora": True, "atlasv2_comel_owlora": True,
+                "atlasv2_svd_orthogonal": True,
+            },
+            {"atlasv2_comel_svd_energy": 1.0},
+            {"atlasv2_comel_orthogonal_weight": -1.0},
         )
         for override in invalid:
             with self.subTest(override=override), self.assertRaises(ValueError):
@@ -199,6 +290,75 @@ class AtlasV2Tests(unittest.TestCase):
         self.assertTrue(all(module.weight.grad is None for module in lora.lora_modules.values()))
         self.assertTrue(all(module.lora_b.grad is not None for module in lora.lora_modules.values()))
         self.assertIsNotNone(lora.net.classifier.weight.grad)
+
+    def test_svd_orthogonal_variant_trains_projected_lora_and_tracks_basis(self):
+        options = args(atlasv2_lora=True, atlasv2_svd_orthogonal=True)
+        model = build(options)
+        task0 = TaskData(0, [bag(0), bag(1)])
+        model.begin_task(task0)
+        model.observe(*bag(0), task=0)
+        self.assertTrue(all(
+            isinstance(module, SVDOrthogonalLoRALinear)
+            for module in model.lora_modules.values()
+        ))
+        self.assertTrue(all(module.lora_b.grad is not None for module in model.lora_modules.values()))
+        model.end_task(task0)
+        self.assertTrue(any(
+            int(module.svd_basis_rank) > 0 for module in model.lora_modules.values()
+        ))
+        state = copy.deepcopy(model.state_dict())
+        method_state = copy.deepcopy(model.get_checkpoint_state())
+        restored = build(options)
+        restored.load_state_dict(state)
+        restored.load_checkpoint_state(method_state)
+        self.assertEqual(
+            [int(module.svd_basis_rank) for module in restored.lora_modules.values()],
+            [int(module.svd_basis_rank) for module in model.lora_modules.values()],
+        )
+
+    def test_comel_owlora_switches_task_adapter_and_round_trips(self):
+        options = args(atlasv2_lora=True, atlasv2_comel_owlora=True)
+        model = build(options)
+        task0 = TaskData(0, [bag(0), bag(1)])
+        model.begin_task(task0)
+        result = model.observe(*bag(0), task=0)
+        self.assertGreaterEqual(result["loss_comel_orthogonal"], 0.0)
+        self.assertTrue(all(
+            isinstance(module, CoMELOWLoRALinear)
+            for module in model.lora_modules.values()
+        ))
+        self.assertTrue(all(
+            module.current_adapter().up.weight.grad is not None
+            for module in model.lora_modules.values()
+        ))
+        before_end = [
+            module.task_adapters[0].up.weight.detach().clone()
+            for module in model.lora_modules.values()
+        ]
+        model.end_task(task0)
+        self.assertTrue(all(
+            torch.equal(before, module.task_adapters[0].up.weight)
+            for before, module in zip(before_end, model.lora_modules.values())
+        ))
+
+        model.begin_task(TaskData(1, [bag(2), bag(3)]))
+        self.assertTrue(all(int(module.active_task) == 1 for module in model.lora_modules.values()))
+        self.assertTrue(all(
+            all(not p.requires_grad for p in module.task_adapters[0].parameters())
+            and all(p.requires_grad for p in module.task_adapters[1].parameters())
+            for module in model.lora_modules.values()
+        ))
+        module_state = copy.deepcopy(model.state_dict())
+        method_state = copy.deepcopy(model.get_checkpoint_state())
+        restored = build(options)
+        restored.load_state_dict(module_state)
+        restored.load_checkpoint_state(method_state)
+        self.assertTrue(all(int(module.active_task) == 1 for module in restored.lora_modules.values()))
+        self.assertTrue(all(
+            all(not p.requires_grad for p in module.task_adapters[0].parameters())
+            and all(p.requires_grad for p in module.task_adapters[1].parameters())
+            for module in restored.lora_modules.values()
+        ))
 
     def test_replay_is_one_to_one_and_loss_is_mean_not_sum(self):
         options = args(atlasv2_lora=True, atlasv2_replay=True, buffer_size=30)

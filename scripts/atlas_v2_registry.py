@@ -1,4 +1,4 @@
-"""Load and scientifically validate the eight-setting ATLAS-v2 registry."""
+"""Load and scientifically validate the ATLAS-v2 setting registry."""
 
 from __future__ import annotations
 
@@ -21,6 +21,17 @@ SETTING_IDS = (
     "atlasv2_frozen_proto",
     "atlasv2_lora_replay_proto_realign_prompt",
     "atlasv2_lora_replay_proto_realign_prompt_nce",
+    "atlasv2_base_lora_svd_orthogonal",
+    "atlasv2_replay_proto",
+    "atlasv2_lora_proto",
+    "atlasv2_base_lora_comel_owlora",
+)
+COMEL_SETTING_ID = "atlasv2_base_lora_comel_owlora"
+PROTO_FACTORIAL_IDS = (
+    "atlasv2_frozen_proto",
+    "atlasv2_replay_proto",
+    "atlasv2_lora_proto",
+    "atlasv2_lora_replay_proto",
 )
 MECHANISM_FIELDS = (
     "atlasv2_lora", "atlasv2_replay", "atlasv2_prototype",
@@ -59,9 +70,9 @@ def load_registry(path: str | Path) -> Dict[str, Any]:
     if not isinstance(defaults, dict) or not isinstance(variants, dict):
         raise ValueError("ATLAS-v2 defaults and variants must be mappings")
     if tuple(variants) != SETTING_IDS:
-        raise ValueError("ATLAS-v2 registry must contain exactly the eight ordered settings")
+        raise ValueError("ATLAS-v2 registry does not match the ordered setting schema")
     if int(defaults.get("expected_variants", -1)) != len(SETTING_IDS):
-        raise ValueError("ATLAS-v2 expected_variants must equal 8")
+        raise ValueError(f"ATLAS-v2 expected_variants must equal {len(SETTING_IDS)}")
 
     config_path = Path(str(defaults.get("config", "configs/methods.yaml")))
     if not config_path.is_absolute():
@@ -106,6 +117,50 @@ def load_registry(path: str | Path) -> Dict[str, Any]:
         if differences != allowed:
             raise ValueError(
                 f"ATLAS-v2 comparison {left_id} -> {right_id} differs in {sorted(differences)}"
+            )
+    base = variants["atlasv2_base_lora"]["overrides"]
+    geometry = variants["atlasv2_base_lora_svd_orthogonal"]["overrides"]
+    geometry_differences = {
+        key for key in set(base) | set(geometry) if base.get(key) != geometry.get(key)
+    }
+    if geometry_differences != {"atlasv2_svd_orthogonal", "atlasv2_svd_energy"}:
+        raise ValueError(
+            "ATLAS-v2 SVD-orthogonal extension must otherwise match base LoRA"
+        )
+    comel = variants[COMEL_SETTING_ID]["overrides"]
+    comel_differences = {
+        key for key in set(base) | set(comel) if base.get(key) != comel.get(key)
+    }
+    expected_comel = {
+        "atlasv2_comel_owlora", "atlasv2_comel_svd_energy",
+        "atlasv2_comel_orthogonal_weight",
+    }
+    if comel_differences != expected_comel:
+        raise ValueError("ATLAS-v2 CoMEL OWLoRA must otherwise match base LoRA")
+    expected_cells = {
+        "atlasv2_frozen_proto": (False, False, False),
+        "atlasv2_replay_proto": (False, True, False),
+        "atlasv2_lora_proto": (True, False, True),
+        "atlasv2_lora_replay_proto": (True, True, True),
+    }
+    for variant_id in PROTO_FACTORIAL_IDS:
+        overrides = variants[variant_id]["overrides"]
+        actual = (
+            bool(overrides["atlasv2_lora"]),
+            bool(overrides["atlasv2_replay"]),
+            bool(overrides["atlasv2_train_classifier"]),
+        )
+        if actual != expected_cells[variant_id]:
+            raise ValueError(
+                f"ATLAS-v2 prototype factorial cell {variant_id} is malformed"
+            )
+        if not bool(overrides["atlasv2_prototype"]) or any(
+            bool(overrides[field])
+            for field in ("atlasv2_realign", "atlasv2_prompt", "atlasv2_nce")
+        ):
+            raise ValueError(
+                "ATLAS-v2 prototype factorial requires prototype only, without "
+                f"realignment/prompt/NCE: {variant_id}"
             )
     return {"path": source, "defaults": defaults, "variants": variants}
 

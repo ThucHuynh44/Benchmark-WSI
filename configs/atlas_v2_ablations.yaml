@@ -2,7 +2,7 @@ defaults:
   config: configs/methods.yaml
   backbone: feather
   result_root: ablations/atlas_v2
-  expected_variants: 8
+  expected_variants: 12
 
 variants:
   atlasv2_base_frozen:
@@ -140,3 +140,76 @@ variants:
       atlasv2_prompt: true
       atlasv2_nce: true
       atlasv2_train_classifier: true
+
+  atlasv2_base_lora_svd_orthogonal:
+    id: atlasv2_base_lora_svd_orthogonal
+    group: lora_geometry_extension
+    model: atlas_v2
+    label: Standard LoRA + SVD-tracked orthogonal updates
+    factor: lora_geometry
+    value: svd_orthogonal
+    overrides:
+      buffer_size: 0
+      atlasv2_lora: true
+      atlasv2_replay: false
+      atlasv2_prototype: false
+      atlasv2_realign: false
+      atlasv2_prompt: false
+      atlasv2_nce: false
+      atlasv2_train_classifier: true
+      atlasv2_svd_orthogonal: true
+      atlasv2_svd_energy: 0.99
+
+  atlasv2_replay_proto:
+    id: atlasv2_replay_proto
+    group: prototype_replay_lora_factorial
+    model: atlas_v2
+    label: Frozen FEATHER + replay + prototypes
+    factor: replay_lora_cell
+    value: replay_on_lora_off
+    overrides:
+      buffer_size: 30
+      atlasv2_lora: false
+      atlasv2_replay: true
+      atlasv2_prototype: true
+      atlasv2_realign: false
+      atlasv2_prompt: false
+      atlasv2_nce: false
+      atlasv2_train_classifier: false
+
+  atlasv2_lora_proto:
+    id: atlasv2_lora_proto
+    group: prototype_replay_lora_factorial
+    model: atlas_v2
+    label: Standard LoRA + prototypes without replay
+    factor: replay_lora_cell
+    value: replay_off_lora_on
+    overrides:
+      buffer_size: 0
+      atlasv2_lora: true
+      atlasv2_replay: false
+      atlasv2_prototype: true
+      atlasv2_realign: false
+      atlasv2_prompt: false
+      atlasv2_nce: false
+      atlasv2_train_classifier: true
+
+  atlasv2_base_lora_comel_owlora:
+    id: atlasv2_base_lora_comel_owlora
+    group: lora_strategy_extension
+    model: atlas_v2
+    label: CoMEL-style cumulative OWLoRA + linear CE
+    factor: lora_strategy
+    value: comel_owlora
+    overrides:
+      buffer_size: 0
+      atlasv2_lora: true
+      atlasv2_replay: false
+      atlasv2_prototype: false
+      atlasv2_realign: false
+      atlasv2_prompt: false
+      atlasv2_nce: false
+      atlasv2_train_classifier: true
+      atlasv2_comel_owlora: true
+      atlasv2_comel_svd_energy: 0.99
+      atlasv2_comel_orthogonal_weight: 1.0

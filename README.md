@@ -405,7 +405,7 @@ dictionary with `logits`, or ConSlide's five-item output tuple.
 ## ATLAS-v2 additive ladder
 
 ATLAS-v2 is independent of the historical `atlas_mil` implementation and
-registry. Its eight settings are declared in
+registry. Its settings are declared in
 `configs/atlas_v2_ablations.yaml`. Replay settings retain at most 30 selected
 WSIs total and store every selected WSI's complete pre-extracted feature bag;
 there is no patch selection, teacher target, attention KD, reconstruction,
@@ -433,6 +433,51 @@ Generate the non-ranking summary with:
 ```bash
 python scripts/summarize_atlas_v2_ablations.py
 ```
+
+The optional `atlasv2_base_lora_svd_orthogonal` geometry extension otherwise
+matches `atlasv2_base_lora`. It uses SVD at task boundaries to track the left
+subspace of merged LoRA updates and hard-projects each later LoRA update onto
+the orthogonal complement of that historical subspace.
+
+`atlasv2_base_lora_comel_owlora` is a separate LoRA-strategy control adapted
+from this repository's CoMEL OWLoRA implementation. At initialization it
+SVD-truncates each eligible frozen FEATHER linear weight at 99% energy and
+creates a frozen reference adapter. It then learns one weighted low-rank
+adapter per task, cumulatively applies all learned task adapters, adds CoMEL's
+intra-adapter orthogonality penalty, and projects the current adapter gradients
+away from the reference and previous task adapters. As in CoMEL, `qkv` layers
+use three times the configured rank. Unlike the original CoMEL trainer, which
+full-tunes task 0, this ATLAS-v2 adaptation keeps the pretrained base frozen and
+uses an adapter from task 0 so the comparison respects ATLAS-v2's backbone
+contract. Run the new setting alone with:
+
+```bash
+python scripts/run_atlas_v2_ablations.py dry-run \
+  --variants atlasv2_base_lora_comel_owlora \
+  --folds 0
+```
+
+The strategy-specific controls are `--atlasv2_comel_svd_energy` (default
+`0.99`) and `--atlasv2_comel_orthogonal_weight` (default `1.0`). Task adapters
+are intentionally not merged, so their parameter memory grows linearly with
+the number of tasks.
+
+The prototype-focused LoRA × replay factorial contains all four requested
+cells:
+
+| Setting | LoRA | Replay | Prototype | Linear CE |
+| --- | --- | --- | --- | --- |
+| `atlasv2_frozen_proto` | off | off | on | off |
+| `atlasv2_replay_proto` | off | on | on | off |
+| `atlasv2_lora_proto` | on | off | on | on |
+| `atlasv2_lora_replay_proto` | on | on | on | on |
+
+The two frozen cells disable classifier training because their post-task NCM
+inference has no trainable representation. The LoRA cells train the linear CE
+head because it supplies the gradient used to learn LoRA. Consequently,
+`atlasv2_replay_proto` is an intentional negative control: replay memory is
+populated, but a frozen embedding space should make its prototype predictions
+match `atlasv2_frozen_proto` up to numerical determinism.
 
 ## Updates / TODOs
 Please follow this GitHub for more updates.

@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.atlas_v2_registry import load_registry, select_variants
+from scripts.atlas_v2_registry import SETTING_IDS, load_registry, select_variants
 
 
 PILOT_VARIANTS = (
@@ -103,7 +103,10 @@ def resolved_audit(variant: Dict[str, Any], fold: int) -> str:
         f"Prototype={'ON' if values['atlasv2_prototype'] else 'OFF'} "
         f"Realignment={'ON' if values['atlasv2_realign'] else 'OFF'} "
         f"Prompt={'ON' if values['atlasv2_prompt'] else 'OFF'} "
-        f"NCE={'ON' if values['atlasv2_nce'] else 'OFF'}"
+        f"NCE={'ON' if values['atlasv2_nce'] else 'OFF'} "
+        f"LinearCE={'ON' if values['atlasv2_train_classifier'] else 'OFF'} "
+        f"SVD_Orthogonal={'ON' if values.get('atlasv2_svd_orthogonal', False) else 'OFF'} "
+        f"CoMEL={'ON' if values.get('atlasv2_comel_owlora', False) else 'OFF'}"
     )
 
 
@@ -209,7 +212,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.action == "list":
         for variant in registry["variants"].values():
             print(resolved_audit(variant, 0).replace(" fold=0", ""))
-        print("variants=8")
+        print(f"variants={len(SETTING_IDS)}")
         return 0
 
     variants = select_variants(registry, args.variants)
