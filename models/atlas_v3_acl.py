@@ -41,17 +41,28 @@ ACL_MODES = (
     "gated_oas",
     "gated_task_margin",
     "frozen_raw_oas",
+    "oas_static",
+    "oas_transport",
+    "oas_oracle",
 )
 TRANSPORT_MODES = {
     "sdc", "ldc", "sldc", "lowrank", "histneg_lowrank",
-    "gated", "gated_oas", "gated_task_margin",
+    "gated", "gated_oas", "gated_task_margin", "oas_transport",
 }
 HISTNEG_MODES = {
     "histneg", "histneg_lowrank", "gated", "gated_oas",
-    "gated_task_margin",
+    "gated_task_margin", "oas_static", "oas_transport", "oas_oracle",
 }
 GATED_MODES = {"gated", "gated_oas", "gated_task_margin"}
-OAS_MODES = {"gated_oas", "frozen_raw_oas"}
+OAS_MODES = {
+    "gated_oas", "frozen_raw_oas", "oas_static", "oas_transport", "oas_oracle",
+}
+RAW_TRANSPORT_MODES = {"gated_oas", "oas_transport"}
+OAS_DIAGNOSTIC_SEMANTICS = {
+    "oas_static": "acl_histneg_raw_oas_static_no_transport_no_gate_v1",
+    "oas_transport": "acl_histneg_raw_oas_ungated_lowrank_transport_v1",
+    "oas_oracle": "acl_histneg_raw_oas_oracle_recompute_with_drift_probe_v1",
+}
 
 
 def get_parser() -> ArgumentParser:
@@ -409,8 +420,14 @@ class AtlasV3ACL(ContinualModel):
     @torch.no_grad()
     def _transport_old(self, pre_raw: torch.Tensor, post_raw: torch.Tensor) -> Dict[str, Any]:
         row: Dict[str, Any] = {"task": self.current_task, "transport_kind": self.mode, "old_class_count": self.old_class_count}
-        if self.old_class_count == 0 or self.mode not in TRANSPORT_MODES:
-            row.update({"effective_rank": 0.0, "transport_fallback_reason": "no_old_classes" if self.old_class_count == 0 else "static_bank"})
+        if self.old_class_count == 0:
+            row.update({"effective_rank": 0.0, "transport_fallback_reason": "no_old_classes"})
+            return row
+        if self.mode == "oas_static":
+            row.update({"effective_rank": 0.0, "transport_fallback_reason": "static_old_statistics"})
+            return row
+        if self.mode not in TRANSPORT_MODES:
+            row.update({"effective_rank": 0.0, "transport_fallback_reason": "static_bank"})
             return row
         device = self.device
         source_norm = F.normalize(pre_raw.to(device), dim=1, eps=1.0e-8)
@@ -438,7 +455,7 @@ class AtlasV3ACL(ContinualModel):
             row.update({"effective_rank": float(self.embedding_dim), "transport_fallback_reason": ""})
             return row
 
-        raw_oas = self.mode == "gated_oas"
+        raw_oas = self.mode in RAW_TRANSPORT_MODES
         source = pre_raw.to(device) if raw_oas else source_norm
         target = post_raw.to(device) if raw_oas else target_norm
         points = self.net.raw_mean[:self.old_class_count].detach().float().to(device) if raw_oas else old
@@ -526,6 +543,219 @@ class AtlasV3ACL(ContinualModel):
                 self.net.raw_scatter[label].copy_(centered.t() @ centered)
 
     @torch.no_grad()
+    def _fit_oracle_statistics(
+        self,
+        dataset,
+        current_raw: torch.Tensor,
+        current_labels: torch.Tensor,
+    ) -> int:
+        """Recompute all seen statistics with old train data (diagnostic only)."""
+
+        if not hasattr(dataset, "_datasets_for_task"):
+            raise RuntimeError(
+                "OAS oracle requires seq-wsi task datasets to revisit old train splits"
+            )
+        raw_parts = []
+        label_parts = []
+        revisited = 0
+        collate_fn = dataset.train_loader.collate_fn
+        fold = int(getattr(self.args, "fold", 0))
+        for task_id in range(self.current_task):
+            train_set = dataset._datasets_for_task(task_id, fold)[0]
+            source = DataLoader(
+                train_set,
+                batch_size=1,
+                shuffle=False,
+                num_workers=0,
+                collate_fn=collate_fn,
+            )
+            raw, labels, _ = self._collect_loader(source)
+            raw_parts.append(raw)
+            label_parts.append(labels)
+            revisited += int(raw.shape[0])
+        raw_parts.append(current_raw)
+        label_parts.append(current_labels)
+        all_raw = torch.cat(raw_parts).float()
+        all_labels = torch.cat(label_parts).long()
+        for label in range(self.seen_class_count):
+            values = all_raw[all_labels == label].to(self.net.raw_mean)
+            if values.shape[0] == 0:
+                raise RuntimeError(f"OAS oracle has no train samples for class {label}")
+            mean = values.mean(0)
+            centered = values - mean
+            self.net.prototype_bank[label].copy_(
+                F.normalize(mean, dim=0, eps=1.0e-8).to(self.net.prototype_bank)
+            )
+            self.net.prototype_valid[label] = True
+            self.net.raw_count[label] = int(values.shape[0])
+            self.net.raw_mean[label].copy_(mean)
+            self.net.raw_scatter[label].copy_(centered.t() @ centered)
+            self.net.hist_reliability[label] = 1.0
+            self.net.uncertainty_ema[label] = 0.0
+            self.net.last_coverage[label] = 1.0
+            self.net.last_step_gate[label] = 1.0
+        return revisited
+
+    @torch.no_grad()
+    def _oracle_drift_diagnostics(
+        self,
+        pre_raw: torch.Tensor,
+        post_raw: torch.Tensor,
+        old_mean: torch.Tensor,
+        old_scatter: torch.Tensor,
+        old_count: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Compare no correction, ungated transport, and gated transport to oracle statistics."""
+
+        if self.old_class_count == 0:
+            return {
+                "oracle_class_diagnostics": [],
+                "oracle_probe_status": "no_old_classes",
+            }
+        device = self.device
+        source = pre_raw.detach().float().to(device)
+        target = post_raw.detach().float().to(device)
+        means_before = old_mean.detach().float().to(device)
+        scatters_before = old_scatter.detach().float().to(device)
+        counts_before = old_count.detach().long().to(device)
+        rank = int(self.args.atlasv3_acl_transport_rank)
+        ridge = float(self.args.atlasv3_acl_transport_ridge)
+        fitted = fit_lowrank_residual(source, target, rank=rank, ridge=ridge)
+        coverage = distribution_coverage(
+            means_before,
+            scatters_before,
+            counts_before,
+            source,
+            energy=float(self.args.atlasv3_acl_coverage_energy),
+        )
+        gates, uncertainty, bootstrap = bootstrap_gates(
+            means_before,
+            source,
+            target,
+            coverage,
+            fitted,
+            rank=rank,
+            ridge=ridge,
+            samples=int(self.args.atlasv3_acl_bootstrap_samples),
+            beta=float(self.args.atlasv3_acl_uncertainty_beta),
+            seed=int(getattr(self.args, "seed", 0) or 0)
+            + 1009 * int(getattr(self.args, "fold", 0) or 0)
+            + 104729 * self.current_task,
+        )
+        ones = torch.ones_like(gates)
+        ungated_mean = fitted.map(means_before, ones)
+        gated_mean = fitted.map(means_before, gates)
+        identity = torch.eye(self.embedding_dim, device=device)
+
+        def transport_scatters(step_gates: torch.Tensor) -> torch.Tensor:
+            outputs = []
+            for label in range(self.old_class_count):
+                transform = identity + step_gates[label] * fitted.delta
+                value = transform.t() @ scatters_before[label] @ transform
+                outputs.append(0.5 * (value + value.t()))
+            return torch.stack(outputs)
+
+        ungated_scatter = transport_scatters(ones)
+        gated_scatter = transport_scatters(gates)
+        oracle_mean = self.net.raw_mean[:self.old_class_count].detach().float().to(device)
+        oracle_scatter = self.net.raw_scatter[:self.old_class_count].detach().float().to(device)
+        oracle_count = self.net.raw_count[:self.old_class_count].detach().long().to(device)
+        class_rows: List[Dict[str, Any]] = []
+        metric_names = (
+            "mean_drift_cosine",
+            "mean_residual_ungated_cosine",
+            "mean_residual_gated_cosine",
+            "mean_error_ungated_l2",
+            "mean_error_gated_l2",
+            "mean_error_ungated_relative_l2",
+            "mean_error_gated_relative_l2",
+            "covariance_drift_frobenius",
+            "covariance_residual_ungated_frobenius",
+            "covariance_residual_gated_frobenius",
+            "covariance_drift_relative_frobenius",
+            "covariance_residual_ungated_relative_frobenius",
+            "covariance_residual_gated_relative_frobenius",
+            "mean_gain_ungated",
+            "mean_gain_gated",
+            "covariance_gain_ungated",
+            "covariance_gain_gated",
+        )
+        collected: Dict[str, List[float]] = {name: [] for name in metric_names}
+        for label in range(self.old_class_count):
+            degrees_before = max(int(counts_before[label]) - 1, 1)
+            degrees_oracle = max(int(oracle_count[label]) - 1, 1)
+            covariance_before = scatters_before[label] / float(degrees_before)
+            covariance_ungated = ungated_scatter[label] / float(degrees_before)
+            covariance_gated = gated_scatter[label] / float(degrees_before)
+            covariance_oracle = oracle_scatter[label] / float(degrees_oracle)
+            oracle_mean_norm = torch.linalg.vector_norm(oracle_mean[label]).clamp_min(1.0e-8)
+            oracle_covariance_norm = torch.linalg.matrix_norm(covariance_oracle).clamp_min(1.0e-8)
+
+            def cosine_distance(left: torch.Tensor, right: torch.Tensor) -> float:
+                left = F.normalize(left, dim=0, eps=1.0e-8)
+                right = F.normalize(right, dim=0, eps=1.0e-8)
+                return float(1.0 - (left * right).sum().clamp(-1.0, 1.0))
+
+            mean_drift = cosine_distance(means_before[label], oracle_mean[label])
+            mean_residual_ungated = cosine_distance(ungated_mean[label], oracle_mean[label])
+            mean_residual_gated = cosine_distance(gated_mean[label], oracle_mean[label])
+            mean_l2_ungated = float(torch.linalg.vector_norm(ungated_mean[label] - oracle_mean[label]))
+            mean_l2_gated = float(torch.linalg.vector_norm(gated_mean[label] - oracle_mean[label]))
+            covariance_drift = float(torch.linalg.matrix_norm(covariance_before - covariance_oracle))
+            covariance_residual_ungated = float(torch.linalg.matrix_norm(covariance_ungated - covariance_oracle))
+            covariance_residual_gated = float(torch.linalg.matrix_norm(covariance_gated - covariance_oracle))
+            values = {
+                "mean_drift_cosine": mean_drift,
+                "mean_residual_ungated_cosine": mean_residual_ungated,
+                "mean_residual_gated_cosine": mean_residual_gated,
+                "mean_error_ungated_l2": mean_l2_ungated,
+                "mean_error_gated_l2": mean_l2_gated,
+                "mean_error_ungated_relative_l2": mean_l2_ungated / float(oracle_mean_norm),
+                "mean_error_gated_relative_l2": mean_l2_gated / float(oracle_mean_norm),
+                "covariance_drift_frobenius": covariance_drift,
+                "covariance_residual_ungated_frobenius": covariance_residual_ungated,
+                "covariance_residual_gated_frobenius": covariance_residual_gated,
+                "covariance_drift_relative_frobenius": covariance_drift / float(oracle_covariance_norm),
+                "covariance_residual_ungated_relative_frobenius": covariance_residual_ungated / float(oracle_covariance_norm),
+                "covariance_residual_gated_relative_frobenius": covariance_residual_gated / float(oracle_covariance_norm),
+                "mean_gain_ungated": mean_drift - mean_residual_ungated,
+                "mean_gain_gated": mean_drift - mean_residual_gated,
+                "covariance_gain_ungated": (covariance_drift - covariance_residual_ungated) / float(oracle_covariance_norm),
+                "covariance_gain_gated": (covariance_drift - covariance_residual_gated) / float(oracle_covariance_norm),
+            }
+            for name, value in values.items():
+                collected[name].append(float(value))
+            origin_task = int(self.net.class_task[label])
+            class_rows.append({
+                "after_task": int(self.current_task),
+                "class_id": int(label),
+                "origin_task": origin_task,
+                "class_age": int(self.current_task - origin_task),
+                "sample_count": int(oracle_count[label]),
+                "coverage": float(coverage[label]),
+                "step_gate": float(gates[label]),
+                "bootstrap_uncertainty": (
+                    float(uncertainty[label])
+                    if bool(torch.isfinite(uncertainty[label]))
+                    else ""
+                ),
+                **values,
+            })
+        row: Dict[str, Any] = {
+            "oracle_class_diagnostics": class_rows,
+            "oracle_probe_status": "ok",
+            "oracle_probe_scope": "one_step_from_oracle_previous_statistics",
+            **{f"oracle_probe_{key}": value for key, value in fitted.diagnostics.items()},
+            **{f"oracle_probe_{key}": value for key, value in bootstrap.items()},
+        }
+        row.update({f"oracle_probe_{key}": value for key, value in summarize(coverage, "coverage").items()})
+        row.update({f"oracle_probe_{key}": value for key, value in summarize(gates, "step_gate").items()})
+        row.update({f"oracle_probe_{key}": value for key, value in summarize(uncertainty, "bootstrap_uncertainty").items()})
+        for name, values in collected.items():
+            row[f"oracle_{name}_mean"] = float(sum(values) / len(values))
+        return row
+
+    @torch.no_grad()
     def _fit_oas(self) -> None:
         seen = self.seen_class_count
         counts = self.net.raw_count[:seen]
@@ -570,6 +800,31 @@ class AtlasV3ACL(ContinualModel):
             self._fit_current_statistics(post_raw, labels)
             self._fit_oas()
             row = {"task": self.current_task, "transport_kind": "frozen_raw_oas", "transport_fallback_reason": "frozen_control", "effective_rank": 0.0}
+        elif self.mode == "oas_oracle":
+            if self._pair_pre_raw is None or self._pair_labels is None or self._pair_indices is None:
+                raise RuntimeError("OAS oracle pre-adaptation pair cache is missing")
+            if not torch.equal(labels, self._pair_labels) or not torch.equal(indices, self._pair_indices):
+                raise RuntimeError("Pre/post oracle pairs are misaligned")
+            old_mean = self.net.raw_mean[:self.old_class_count].clone()
+            old_scatter = self.net.raw_scatter[:self.old_class_count].clone()
+            old_count = self.net.raw_count[:self.old_class_count].clone()
+            revisited = self._fit_oracle_statistics(dataset, post_raw, labels)
+            self._fit_oas()
+            row = {
+                "task": self.current_task,
+                "transport_kind": "oas_oracle",
+                "transport_fallback_reason": "diagnostic_old_train_recompute",
+                "effective_rank": 0.0,
+                "oracle_revisited_wsis": int(revisited),
+                "diagnostic_only": True,
+            }
+            row.update(self._oracle_drift_diagnostics(
+                self._pair_pre_raw,
+                post_raw,
+                old_mean,
+                old_scatter,
+                old_count,
+            ))
         else:
             if self._pair_pre_raw is None or self._pair_labels is None or self._pair_indices is None:
                 raise RuntimeError("ATLAS-v3 ACL pre-adaptation pair cache is missing")
@@ -604,7 +859,7 @@ class AtlasV3ACL(ContinualModel):
 
     def _config(self) -> Dict[str, Any]:
         keys = [key for key in vars(self.args) if key.startswith("atlasv3_acl_")]
-        return {
+        config = {
             "version": CHECKPOINT_VERSION,
             "backbone": "feather",
             "mode": self.mode,
@@ -613,6 +868,14 @@ class AtlasV3ACL(ContinualModel):
             "ablation_id": getattr(self.args, "ablation_id", None),
             "ablation_config_hash": getattr(self.args, "ablation_config_hash", None),
         }
+        if self.mode == "oas_oracle":
+            config.update({
+                "diagnostic_only": True,
+                "revisits_old_train_data": True,
+            })
+        if self.mode in OAS_DIAGNOSTIC_SEMANTICS:
+            config["implementation_semantics"] = OAS_DIAGNOSTIC_SEMANTICS[self.mode]
+        return config
 
     def get_run_metadata(self) -> Dict[str, Any]:
         config = self._config()
@@ -628,6 +891,7 @@ class AtlasV3ACL(ContinualModel):
             "transport_accounting": {
                 "stored_slide_embeddings": 0,
                 "retained_wsis": 0,
+                "oracle_revisited_wsis": int(sum(int(row.get("oracle_revisited_wsis", 0)) for row in self.transport_history)),
                 "stored_statistics_bytes": self._statistics_bytes(),
                 "adaptation_parameter_count": int(adaptation_parameters),
                 "history": list(self.transport_history),

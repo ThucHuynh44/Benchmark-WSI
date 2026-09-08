@@ -22,6 +22,13 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.atlas_v3_acl_registry import SETTING_IDS, load_registry, select_variants
 
 
+OAS_DIAGNOSTIC_SEMANTICS = {
+    "oas_static": "acl_histneg_raw_oas_static_no_transport_no_gate_v1",
+    "oas_transport": "acl_histneg_raw_oas_ungated_lowrank_transport_v1",
+    "oas_oracle": "acl_histneg_raw_oas_oracle_recompute_with_drift_probe_v1",
+}
+
+
 def parse_folds(value: str) -> list[int]:
     if value.strip().lower() == "all":
         return list(range(10))
@@ -90,9 +97,11 @@ def validate_command(command: Sequence[str]) -> None:
 def resolved_audit(variant: Dict[str, Any], fold: int) -> str:
     mode = variant["overrides"]["atlasv3_acl_mode"]
     frozen = mode == "frozen_raw_oas"
+    old_data = "STATISTICS_RECOMPUTE_ONLY" if mode == "oas_oracle" else "NONE"
+    diagnostic = "UPPER_BOUND" if mode == "oas_oracle" else "NO"
     return (
         f"variant={variant['id']} fold={int(fold)} FEATHER={'FROZEN' if frozen else 'ACL-ADAPTED'} "
-        f"Mode={mode} Replay=NONE LoRA=NONE"
+        f"Mode={mode} Replay=NONE OldData={old_data} Diagnostic={diagnostic} LoRA=NONE"
     )
 
 
@@ -115,6 +124,13 @@ def inspect_run(registry: Dict[str, Any], variant: Dict[str, Any], fold: int) ->
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("ablation_id") != variant["id"] or manifest.get("ablation_config_hash") != variant["config_hash"]:
         return "mismatch"
+    mode = variant["overrides"]["atlasv3_acl_mode"]
+    expected_semantics = OAS_DIAGNOSTIC_SEMANTICS.get(mode)
+    saved_semantics = manifest.get("atlas_v3_acl_config", {}).get(
+        "implementation_semantics"
+    )
+    if expected_semantics is not None and saved_semantics != expected_semantics:
+        return "incomplete"
     num_tasks = int(manifest.get("num_tasks", 10))
     expected = {(int(fold), after, evaluated) for after in range(num_tasks) for evaluated in range(after + 1)}
     counts = [_read_keys(run_dir / f"evaluation/{mode}/eval_matrix.csv") for mode in ("class_il", "task_il")]

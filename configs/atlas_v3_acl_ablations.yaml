@@ -2,7 +2,7 @@ defaults:
   config: configs/methods.yaml
   backbone: feather
   result_root: ablations/atlas_v3_acl
-  expected_variants: 11
+  expected_variants: 14
 
 variants:
   atlasv3_acl:
@@ -103,3 +103,30 @@ variants:
     factor: classifier_control
     value: frozen_raw_oas
     overrides: {atlasv3_acl_mode: frozen_raw_oas}
+
+  atlasv3_acl_oas_static:
+    id: atlasv3_acl_oas_static
+    group: oas_transport_diagnostic
+    model: atlas_v3_acl
+    label: ACL OAS-LDA with static historical statistics
+    factor: historical_statistics
+    value: static
+    overrides: {atlasv3_acl_mode: oas_static}
+
+  atlasv3_acl_oas_transport:
+    id: atlasv3_acl_oas_transport
+    group: oas_transport_diagnostic
+    model: atlas_v3_acl
+    label: ACL OAS-LDA with ungated raw low-rank transport
+    factor: historical_statistics
+    value: ungated_transport
+    overrides: {atlasv3_acl_mode: oas_transport}
+
+  atlasv3_acl_oas_oracle:
+    id: atlasv3_acl_oas_oracle
+    group: oas_transport_diagnostic
+    model: atlas_v3_acl
+    label: ACL OAS-LDA with oracle old-train statistic recomputation
+    factor: historical_statistics
+    value: oracle_recompute
+    overrides: {atlasv3_acl_mode: oas_oracle}

@@ -172,7 +172,15 @@ ATLAS_DIAGNOSTIC_FIELDS = [
     "bootstrap_uncertainty_max", "hist_reliability_min",
     "hist_reliability_mean", "hist_reliability_max", "bootstrap_status",
     "bootstrap_valid_oob", "transport_fallback_reason",
-    "stored_statistics_bytes", "retained_wsis",
+    "stored_statistics_bytes", "retained_wsis", "oracle_revisited_wsis",
+    "oracle_mean_drift_cosine_mean",
+    "oracle_mean_residual_ungated_cosine_mean",
+    "oracle_mean_residual_gated_cosine_mean",
+    "oracle_covariance_drift_relative_frobenius_mean",
+    "oracle_covariance_residual_ungated_relative_frobenius_mean",
+    "oracle_covariance_residual_gated_relative_frobenius_mean",
+    "oracle_mean_gain_ungated_mean", "oracle_mean_gain_gated_mean",
+    "oracle_covariance_gain_ungated_mean", "oracle_covariance_gain_gated_mean",
 ]
 
 DISTRIBUTION_EVAL_FIELDS = [

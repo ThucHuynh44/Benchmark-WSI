@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.atlas_v3_acl_registry import load_registry
+from scripts.atlas_v3_acl_registry import load_registry, select_variants
 from scripts.build_cl_table import (
     _read_eval_matrix,
     _rows_by_key,
@@ -96,9 +96,9 @@ def _fold_metrics(run_dir: Path, fold: int, manifest: Mapping[str, Any]) -> Dict
     return metrics
 
 
-def collect(registry: Dict[str, Any]) -> list[dict]:
+def collect(registry: Dict[str, Any], variants: Sequence[dict]) -> list[dict]:
     rows = []
-    for variant in registry["variants"].values():
+    for variant in variants:
         for fold in range(10):
             status = inspect_run(registry, variant, fold)
             row = {
@@ -123,14 +123,14 @@ def collect(registry: Dict[str, Any]) -> list[dict]:
     return rows
 
 
-def summarize(registry: Dict[str, Any], fold_rows: Sequence[dict]) -> list[dict]:
+def summarize(variants: Sequence[dict], fold_rows: Sequence[dict]) -> list[dict]:
     reference = {
         int(row["fold"]): row
         for row in fold_rows
         if row["variant_id"] == REFERENCE_ID and row["status"] == "complete"
     }
     output = []
-    for variant in registry["variants"].values():
+    for variant in variants:
         rows = [row for row in fold_rows if row["variant_id"] == variant["id"]]
         complete = [row for row in rows if row["status"] == "complete"]
         summary = {
@@ -198,6 +198,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--registry", default=str(REPO_ROOT / "configs/atlas_v3_acl_ablations.yaml")
     )
+    parser.add_argument("--variants", nargs="+", default=["all"])
     parser.add_argument(
         "--output", default=str(REPO_ROOT / "results/ablations/atlas_v3_acl/summary")
     )
@@ -206,8 +207,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     registry = load_registry(args.registry)
-    fold_rows = collect(registry)
-    summaries = summarize(registry, fold_rows)
+    variants = select_variants(registry, args.variants)
+    fold_rows = collect(registry, variants)
+    summaries = summarize(variants, fold_rows)
     output = Path(args.output).expanduser().resolve()
 
     fold_fields = [

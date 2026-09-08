@@ -24,6 +24,9 @@ SETTING_IDS = (
     "atlasv3_acl_gated_transport_oas",
     "atlasv3_acl_gated_transport_task_margin",
     "atlasv3_control_frozen_raw_oas",
+    "atlasv3_acl_oas_static",
+    "atlasv3_acl_oas_transport",
+    "atlasv3_acl_oas_oracle",
 )
 
 EXPECTED_MODES = {
@@ -38,6 +41,9 @@ EXPECTED_MODES = {
     "atlasv3_acl_gated_transport_oas": "gated_oas",
     "atlasv3_acl_gated_transport_task_margin": "gated_task_margin",
     "atlasv3_control_frozen_raw_oas": "frozen_raw_oas",
+    "atlasv3_acl_oas_static": "oas_static",
+    "atlasv3_acl_oas_transport": "oas_transport",
+    "atlasv3_acl_oas_oracle": "oas_oracle",
 }
 
 

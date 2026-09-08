@@ -103,7 +103,10 @@ def _rows(model, dataset, fold: int, after_task: int):
                 "covariance_relative_frobenius": "",
                 "covariance_bures": "",
             }
-            if model.mode in {"gated_oas", "frozen_raw_oas"}:
+            if model.mode in {
+                "gated_oas", "frozen_raw_oas", "oas_static",
+                "oas_transport", "oas_oracle",
+            }:
                 oracle_mean = class_raw.mean(0)
                 centered = class_raw - oracle_mean
                 oracle_covariance = centered.t() @ centered / float(max(class_raw.shape[0] - 1, 1))

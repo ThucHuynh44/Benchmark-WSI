@@ -1,5 +1,6 @@
 import copy
 from collections import namedtuple
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -10,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from models.atlas_v3_acl import ACL_MODES, build_model_from_components
+from models.atlas_v3_acl import ACL_MODES, OAS_MODES, build_model_from_components
 from models.utils.atlas_transport import (
     bootstrap_gates,
     fit_lowrank_residual,
@@ -102,6 +103,10 @@ class TaskData:
         self.current_task = task + 1
         self.train_loader = DataLoader(Bags(values), batch_size=1, shuffle=True, collate_fn=collate)
 
+    def _datasets_for_task(self, task_id, fold):
+        dataset = Bags(task_values(int(task_id)))
+        return dataset, dataset, dataset
+
 
 def task_values(task):
     start = task * 2
@@ -137,10 +142,10 @@ def learn_task(model, task):
 
 
 class AtlasV3ACLRegistryTests(unittest.TestCase):
-    def test_registry_has_exactly_eleven_non_confounded_settings(self):
+    def test_registry_has_exactly_fourteen_non_confounded_settings(self):
         registry = load_registry(REGISTRY)
         self.assertEqual(tuple(registry["variants"]), SETTING_IDS)
-        self.assertEqual(len(SETTING_IDS), 11)
+        self.assertEqual(len(SETTING_IDS), 14)
         self.assertIn("atlasv3_acl_histneg_lowrank_transport", SETTING_IDS)
         for variant_id, variant in registry["variants"].items():
             self.assertEqual(variant["overrides"], {"atlasv3_acl_mode": EXPECTED_MODES[variant_id]})
@@ -205,8 +210,45 @@ class AtlasV3ACLTests(unittest.TestCase):
                 self.assertTrue(torch.isfinite(logits[:, :4]).all())
                 self.assertEqual(model.completed_tasks, 2)
                 self.assertEqual(len(model.transport_history), 2)
-                if mode not in {"gated_oas", "frozen_raw_oas"}:
+                if mode not in OAS_MODES:
                     self.assertEqual(model.net.raw_scatter.numel(), 0)
+
+    def test_static_and_oracle_oas_controls_are_explicit(self):
+        static = build(args(atlasv3_acl_mode="oas_static"))
+        learn_task(static, 0)
+        old_mean = static.net.raw_mean[:2].clone()
+        old_gate = static.net.last_step_gate[:2].clone()
+        learn_task(static, 1)
+        self.assertTrue(torch.equal(static.net.raw_mean[:2], old_mean))
+        self.assertTrue(torch.equal(static.net.last_step_gate[:2], old_gate))
+        self.assertEqual(
+            static.transport_history[-1]["transport_fallback_reason"],
+            "static_old_statistics",
+        )
+
+        oracle = build(args(atlasv3_acl_mode="oas_oracle"))
+        learn_task(oracle, 0)
+        learn_task(oracle, 1)
+        self.assertGreater(oracle.transport_history[-1]["oracle_revisited_wsis"], 0)
+        self.assertTrue(oracle.transport_history[-1]["diagnostic_only"])
+        class_rows = oracle.transport_history[-1]["oracle_class_diagnostics"]
+        self.assertEqual(len(class_rows), 2)
+        self.assertIn("mean_drift_cosine", class_rows[0])
+        self.assertIn("mean_residual_ungated_cosine", class_rows[0])
+        self.assertIn("mean_residual_gated_cosine", class_rows[0])
+        self.assertIn("covariance_drift_relative_frobenius", class_rows[0])
+        self.assertIn("covariance_residual_gated_relative_frobenius", class_rows[0])
+        for row in class_rows:
+            for key, value in row.items():
+                self.assertTrue(
+                    not isinstance(value, float) or torch.isfinite(torch.tensor(value)),
+                    msg=f"non-finite oracle diagnostic {key}={value}",
+                )
+        metadata = oracle.get_run_metadata()["atlas_v3_acl_config"]
+        self.assertTrue(metadata["diagnostic_only"])
+        self.assertTrue(metadata["revisits_old_train_data"])
+        self.assertIn("oracle_recompute_with_drift_probe", metadata["implementation_semantics"])
+        json.dumps(oracle.get_run_metadata(), allow_nan=False)
 
     def test_histneg_is_zero_on_first_task_and_positive_afterward(self):
         model = build(args(atlasv3_acl_mode="histneg"))
