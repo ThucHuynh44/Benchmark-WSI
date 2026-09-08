@@ -14,14 +14,14 @@ class MethodConfigTests(unittest.TestCase):
     def test_all_method_configs_parse(self):
         config_path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         expected = {
-            "atlas_mil", "atlas_v2", "amil", "agem", "derpp", "er_ace", "ewc_on",
+            "atlas_mil", "atlas_v2", "atlas_v3", "atlas_v3_acl", "amil", "agem", "derpp", "er_ace", "ewc_on",
             "gdumb", "joint", "lwsr", "lwf", "micil", "owlora",
             "qpmil_vl", "sgd",
         }
         raw = yaml.safe_load(config_path.read_text())
         self.assertEqual(set(raw["methods"]), expected)
         baseline_methods = expected - {
-            "atlas_mil", "atlas_v2", "amil", "lwsr", "micil", "owlora", "qpmil_vl"
+            "atlas_mil", "atlas_v2", "atlas_v3", "atlas_v3_acl", "amil", "lwsr", "micil", "owlora", "qpmil_vl"
         }
         supported = [
             *((method, backbone) for method in baseline_methods
@@ -29,6 +29,8 @@ class MethodConfigTests(unittest.TestCase):
             *((method, backbone) for method in ("atlas_mil", "amil")
               for backbone in ("generic_mil", "feather")),
             ("atlas_v2", "feather"),
+            ("atlas_v3", "feather"),
+            ("atlas_v3_acl", "feather"),
             *((method, backbone) for method in ("lwsr", "micil")
               for backbone in ("titan", "feather", "gigapath")),
             *(("owlora", backbone) for backbone in ("titan", "feather")),
@@ -52,7 +54,7 @@ class MethodConfigTests(unittest.TestCase):
                 self.assertEqual(args.optimizer, "adamw")
                 self.assertEqual(args.adam_eps, 1.0e-8)
                 self.assertEqual(args.optim_wd, 1.0e-4)
-                self.assertTrue(args.early_stopping)
+                self.assertEqual(args.early_stopping, method != "atlas_v3_acl")
                 self.assertGreater(args.early_stopping_patience, 0)
                 self.assertGreaterEqual(args.early_stopping_min_epoch, 0)
                 self.assertGreaterEqual(args.early_stopping_min_delta, 0.0)
@@ -82,6 +84,8 @@ class MethodConfigTests(unittest.TestCase):
         cases = {
             "atlas_mil": "feather",
             "atlas_v2": "feather",
+            "atlas_v3": "feather",
+            "atlas_v3_acl": "feather",
             "amil": "generic_mil",
             "lwsr": "titan",
             "micil": "feather",
@@ -108,6 +112,13 @@ class MethodConfigTests(unittest.TestCase):
             ("atlas_v2", "generic_mil", []),
             ("atlas_v2", "feather", ["--backbone_max_patches", "1"]),
             ("atlas_v2", "feather", ["--atlasv2_replay", "--buffer_size", "29"]),
+            ("atlas_v3", "titan", []),
+            ("atlas_v3", "generic_mil", []),
+            ("atlas_v3", "feather", ["--backbone_max_patches", "1"]),
+            ("atlas_v3_acl", "titan", []),
+            ("atlas_v3_acl", "generic_mil", []),
+            ("atlas_v3_acl", "feather", ["--backbone_freeze"]),
+            ("atlas_v3_acl", "feather", ["--backbone_max_patches", "1"]),
             ("atlas_mil", "titan", []),
             ("atlas_mil", "gigapath", []),
             ("atlas_mil", "feather", ["--backbone_freeze"]),

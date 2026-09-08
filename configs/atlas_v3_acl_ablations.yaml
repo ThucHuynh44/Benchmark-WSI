@@ -1,0 +1,105 @@
+defaults:
+  config: configs/methods.yaml
+  backbone: feather
+  result_root: ablations/atlas_v3_acl
+  expected_variants: 11
+
+variants:
+  atlasv3_acl:
+    id: atlasv3_acl
+    group: acl_transport_suite
+    model: atlas_v3_acl
+    label: ACL current-task anchors with static historical prototypes
+    factor: base_method
+    value: acl
+    overrides: {atlasv3_acl_mode: acl}
+
+  atlasv3_acl_histneg:
+    id: atlasv3_acl_histneg
+    group: acl_transport_suite
+    model: atlas_v3_acl
+    label: ACL with balanced hard historical negatives
+    factor: historical_negatives
+    value: enabled
+    overrides: {atlasv3_acl_mode: histneg}
+
+  atlasv3_acl_sdc:
+    id: atlasv3_acl_sdc
+    group: acl_transport_suite
+    model: atlas_v3_acl
+    label: ACL with semantic drift compensation control
+    factor: transport
+    value: sdc
+    overrides: {atlasv3_acl_mode: sdc}
+
+  atlasv3_acl_ldc:
+    id: atlasv3_acl_ldc
+    group: acl_transport_suite
+    model: atlas_v3_acl
+    label: ACL with learned full linear drift compensation
+    factor: transport
+    value: ldc
+    overrides: {atlasv3_acl_mode: ldc}
+
+  atlasv3_acl_sldc:
+    id: atlasv3_acl_sldc
+    group: acl_transport_suite
+    model: atlas_v3_acl
+    label: ACL with full ridge-to-identity transport
+    factor: transport
+    value: sldc
+    overrides: {atlasv3_acl_mode: sldc}
+
+  atlasv3_acl_lowrank_transport:
+    id: atlasv3_acl_lowrank_transport
+    group: acl_transport_suite
+    model: atlas_v3_acl
+    label: ACL with normalized rank-eight residual transport
+    factor: transport
+    value: lowrank
+    overrides: {atlasv3_acl_mode: lowrank}
+
+  atlasv3_acl_histneg_lowrank_transport:
+    id: atlasv3_acl_histneg_lowrank_transport
+    group: acl_transport_suite
+    model: atlas_v3_acl
+    label: ACL with historical negatives and ungated low-rank transport
+    factor: gating_control
+    value: ungated
+    overrides: {atlasv3_acl_mode: histneg_lowrank}
+
+  atlasv3_acl_gated_transport:
+    id: atlasv3_acl_gated_transport
+    group: acl_transport_suite
+    model: atlas_v3_acl
+    label: ACL with historical negatives and coverage-bootstrap gating
+    factor: gating_control
+    value: gated
+    overrides: {atlasv3_acl_mode: gated}
+
+  atlasv3_acl_gated_transport_oas:
+    id: atlasv3_acl_gated_transport_oas
+    group: acl_transport_suite
+    model: atlas_v3_acl
+    label: Gated ACL transport with raw OAS-LDA
+    factor: classifier
+    value: raw_oas_lda
+    overrides: {atlasv3_acl_mode: gated_oas}
+
+  atlasv3_acl_gated_transport_task_margin:
+    id: atlasv3_acl_gated_transport_task_margin
+    group: acl_transport_suite
+    model: atlas_v3_acl
+    label: Gated ACL transport with hard task margin
+    factor: task_margin
+    value: enabled
+    overrides: {atlasv3_acl_mode: gated_task_margin}
+
+  atlasv3_control_frozen_raw_oas:
+    id: atlasv3_control_frozen_raw_oas
+    group: acl_transport_controls
+    model: atlas_v3_acl
+    label: Frozen FEATHER raw OAS-LDA control
+    factor: classifier_control
+    value: frozen_raw_oas
+    overrides: {atlasv3_acl_mode: frozen_raw_oas}

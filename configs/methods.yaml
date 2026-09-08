@@ -144,6 +144,54 @@ methods:
     atlasv2_text_model_id: MahmoodLab/TITAN
     atlasv2_text_revision: dac6773d9961cfc75503440676ff157a2c6e8d2e
 
+  atlas_v3:
+    # Training-free frozen-FEATHER subset of ATLAS-v2. The ablation registry
+    # selects exactly one prototype/distribution classifier per run.
+    backbone_cache_dir: /datastore/uittogether/LuuTru/Thuchd/benchmarkWSI/huggingface_cache
+    atlasv3_distribution_mode: prototype
+    atlasv3_distribution_alpha: 0.1
+    atlasv3_distribution_rho: 0.5
+    atlasv3_distribution_rank: 8
+    atlasv3_distribution_clusters: 3
+    atlasv3_distribution_tau_multi: 0.1
+    atlasv3_distribution_beta: 0.25
+    atlasv3_distribution_tau_task: 0.1
+    atlasv3_pt_steps: 200
+    atlasv3_pt_lr: 0.05
+    atlasv3_pt_samples_per_class: 32
+    atlasv3_pt_margin: 0.2
+
+  atlas_v3_acl:
+    # Replay-free one-epoch full-FEATHER adaptation. The dedicated ablation
+    # registry selects transport/loss controls through atlasv3_acl_mode.
+    # Download the pinned gated FEATHER snapshot once into a shared cache.
+    # Authentication is read from the HF_TOKEN environment variable.
+    backbone_allow_download: true
+    backbone_cache_dir: /datastore/uittogether/LuuTru/Thuchd/benchmarkWSI/huggingface_cache
+    n_epochs: 1
+    early_stopping: false
+    bags_per_update: 1
+    lr: 1.0e-5
+    optim_wd: 1.0e-4
+    atlasv3_acl_mode: acl
+    atlasv3_acl_temperature: 0.1
+    atlasv3_acl_hist_weight: 1.0
+    atlasv3_acl_hist_temperature: 0.1
+    atlasv3_acl_hist_margin: 0.2
+    atlasv3_acl_hist_topk: 8
+    atlasv3_acl_transport_rank: 8
+    atlasv3_acl_transport_ridge: 1.0e-3
+    atlasv3_acl_ldc_steps: 100
+    atlasv3_acl_ldc_lr: 1.0e-3
+    atlasv3_acl_sdc_sigma: 0.3
+    atlasv3_acl_coverage_energy: 0.95
+    atlasv3_acl_bootstrap_samples: 20
+    atlasv3_acl_uncertainty_beta: 10.0
+    atlasv3_acl_reliability_floor: 0.1
+    atlasv3_acl_reliability_momentum: 0.5
+    atlasv3_acl_task_margin: 0.2
+    atlasv3_acl_task_weight: 0.1
+
   atlas_mil:
     # Full-bag genuine attention; run the primary method with --backbone feather.
     atlas_replay: true

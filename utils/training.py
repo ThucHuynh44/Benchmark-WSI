@@ -149,7 +149,8 @@ def _scalar_observe_metrics(result) -> Dict[str, float]:
 TRAIN_COMPONENT_FIELDS = [
     "method", "ablation_id", "fold", "task", "epoch", "updates",
     "loss", "loss_cls", "loss_atlas_nce", "loss_reconstruction",
-    "loss_manifold", "loss_attention", "replay_bags", "buffer_size",
+    "loss_manifold", "loss_attention", "loss_acl", "loss_histneg",
+    "loss_task_margin", "replay_bags", "buffer_size",
 ]
 
 ATLAS_DIAGNOSTIC_FIELDS = [
@@ -163,7 +164,15 @@ ATLAS_DIAGNOSTIC_FIELDS = [
     "covariance_trace_before", "covariance_trace_after",
     "effective_lowrank_rank", "sub_prototype_occupancy_min",
     "prototype_offset_norm", "distribution_memory_bytes",
-    "selected_hyperparameters",
+    "selected_hyperparameters", "transport_kind", "effective_rank",
+    "pair_train_mse", "bootstrap_oob_mse", "transport_delta_norm",
+    "transport_condition_number", "coverage_min", "coverage_mean",
+    "coverage_max", "step_gate_min", "step_gate_mean", "step_gate_max",
+    "bootstrap_uncertainty_min", "bootstrap_uncertainty_mean",
+    "bootstrap_uncertainty_max", "hist_reliability_min",
+    "hist_reliability_mean", "hist_reliability_max", "bootstrap_status",
+    "bootstrap_valid_oob", "transport_fallback_reason",
+    "stored_statistics_bytes", "retained_wsis",
 ]
 
 DISTRIBUTION_EVAL_FIELDS = [
@@ -1143,7 +1152,13 @@ def train(model: ContinualModel, dataset: ContinualDataset, args: Namespace, fol
                             loss=f"{ssl_loss / ssl_updates:.4f}", refresh=False
                         )
 
-            training_free = bool(getattr(model, "distribution_enabled", False))
+            training_free = bool(
+                getattr(
+                    model,
+                    "TRAINING_FREE",
+                    getattr(model, "distribution_enabled", False),
+                )
+            )
             epoch_bar = tqdm(
                 range(0 if training_free else model.args.n_epochs),
                 desc=f"fold {fold} task {task_id + 1}/{dataset.N_TASKS}",

@@ -544,6 +544,77 @@ python scripts/run_atlas_v2_ablations.py dry-run \
 Experimental `run`/`resume` commands allow a dirty Git worktree. Manifests still
 record the commit and source-diff hash so runs remain traceable.
 
+## ATLAS-v3 frozen prototype suite
+
+ATLAS-v3 is the compact, training-free successor for the frozen-FEATHER branch
+of ATLAS-v2. Its implementation has no adapter, exemplar buffer, trainable
+linear classifier, prompt branch, or RanPAC path. The registry contains exactly
+11 settings: NCM, OAS-LDA, and these nine distribution modes: diagonal,
+diagonal shrinkage, low rank, task centroid, task LME, multi-prototype,
+prototype tuning, ATLAS-TF, and ATLAS-PT.
+
+The setting IDs use the `atlasv3_` prefix while preserving the descriptive
+suffixes from v2. List or validate the complete matrix with:
+
+```bash
+python scripts/run_atlas_v3_ablations.py list
+python scripts/run_atlas_v3_ablations.py dry-run --variants all --folds 0
+```
+
+Run or resume selected settings in the project PyTorch environment:
+
+```bash
+python scripts/run_atlas_v3_ablations.py run \
+  --variants atlasv3_frozen_proto atlasv3_frozen_proto_oas_lda \
+  atlasv3_frozen_atlas_tf atlasv3_frozen_atlas_pt \
+  --folds all --gpus 0,1
+
+python scripts/run_atlas_v3_ablations.py resume \
+  --variants atlasv3_frozen_atlas_tf atlasv3_frozen_atlas_pt \
+  --folds all --gpus 0,1 --rerun-incomplete
+```
+
+Outputs are isolated under
+`results/ablations/atlas_v3/<variant>/fold_<fold>/`. All 11 settings skip the
+epoch loop and fit only train-split sufficient statistics at each task boundary;
+distribution hyperparameter selection remains fold-local and validation-only.
+
+## ATLAS-v3 ACL transport suite
+
+`atlas_v3_acl` is a separate replay-free research branch. It adapts the full
+FEATHER slide encoder for one current-task epoch, freezes it again, and uses
+paired pre/post current-task embeddings to evaluate static, SDC, learned-linear,
+ridge, low-rank, and coverage/bootstrap-gated historical prototype transport.
+The FEATHER classifier remains frozen and no old WSI or embedding is retained.
+
+The registry includes ten ACL settings plus a frozen raw-OAS control. The
+ungated `histneg_lowrank` setting is retained explicitly so the effect of
+coverage gating is not confounded with historical negatives.
+
+```bash
+python scripts/run_atlas_v3_acl_ablations.py list
+python scripts/run_atlas_v3_acl_ablations.py dry-run --variants all --folds 0
+
+python scripts/run_atlas_v3_acl_ablations.py run \
+  --variants atlasv3_acl atlasv3_acl_histneg \
+  atlasv3_acl_histneg_lowrank_transport atlasv3_acl_gated_transport \
+  --folds all --gpus 0,1
+```
+
+All hyperparameters in the primary registry are fixed across folds. Raw OAS-LDA
+stores only per-class counts, means, and scatters; other modes retain normalized
+class prototypes plus transport reliability. Transport fitting pairs are
+current-task-only transient tensors and are cleared before task checkpoints.
+
+Old training splits may be reopened only by the explicitly offline oracle audit;
+its output is never consumed by training or model selection:
+
+```bash
+python scripts/audit_atlas_v3_acl_transport.py \
+  --exp-desc ablations/atlas_v3_acl/atlasv3_acl_gated_transport/fold_0 \
+  --fold 0 --after-task 9
+```
+
 ## Updates / TODOs
 Please follow this GitHub for more updates.
 

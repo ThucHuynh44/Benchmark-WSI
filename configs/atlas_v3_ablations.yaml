@@ -1,0 +1,116 @@
+defaults:
+  config: configs/methods.yaml
+  backbone: feather
+  result_root: ablations/atlas_v3
+  expected_variants: 11
+
+variants:
+  atlasv3_frozen_proto_diag:
+    id: atlasv3_frozen_proto_diag
+    group: frozen_prototype_suite
+    model: atlas_v3
+    label: Frozen FEATHER + diagonal distribution prototypes
+    factor: distribution_metric
+    value: diagonal
+    overrides:
+      atlasv3_distribution_mode: diag
+
+  atlasv3_frozen_proto_diag_shrink:
+    id: atlasv3_frozen_proto_diag_shrink
+    group: frozen_prototype_suite
+    model: atlas_v3
+    label: Frozen FEATHER + shrinkage-normalized diagonal distributions
+    factor: covariance_shrinkage
+    value: diagonal_shrinkage
+    overrides:
+      atlasv3_distribution_mode: diag_shrink
+
+  atlasv3_frozen_proto_lowrank:
+    id: atlasv3_frozen_proto_lowrank
+    group: frozen_prototype_suite
+    model: atlas_v3
+    label: Frozen FEATHER + trace-normalized low-rank distributions
+    factor: covariance_structure
+    value: lowrank
+    overrides:
+      atlasv3_distribution_mode: lowrank
+
+  atlasv3_frozen_proto_task_centroid:
+    id: atlasv3_frozen_proto_task_centroid
+    group: frozen_prototype_suite
+    model: atlas_v3
+    label: Diagonal shrinkage + equal-class task centroid calibration
+    factor: task_calibration
+    value: centroid
+    overrides:
+      atlasv3_distribution_mode: task_centroid
+
+  atlasv3_frozen_proto_task_lme:
+    id: atlasv3_frozen_proto_task_lme
+    group: frozen_prototype_suite
+    model: atlas_v3
+    label: Diagonal shrinkage + soft task LME calibration
+    factor: task_calibration
+    value: lme
+    overrides:
+      atlasv3_distribution_mode: task_lme
+
+  atlasv3_frozen_proto_multi:
+    id: atlasv3_frozen_proto_multi
+    group: frozen_prototype_suite
+    model: atlas_v3
+    label: Frozen FEATHER + deterministic multi-prototypes
+    factor: prototype_cardinality
+    value: multi
+    overrides:
+      atlasv3_distribution_mode: multi
+
+  atlasv3_frozen_proto_pt_only:
+    id: atlasv3_frozen_proto_pt_only
+    group: frozen_prototype_suite
+    model: atlas_v3
+    label: Diagonal shrinkage + train-only prototype tuning
+    factor: prototype_tuning
+    value: point_only
+    overrides:
+      atlasv3_distribution_mode: pt_only
+
+  atlasv3_frozen_atlas_tf:
+    id: atlasv3_frozen_atlas_tf
+    group: frozen_prototype_suite
+    model: atlas_v3
+    label: ATLAS-TF low-rank + multi-prototype + task LME
+    factor: full_method
+    value: training_free
+    overrides:
+      atlasv3_distribution_mode: atlas_tf
+
+  atlasv3_frozen_atlas_pt:
+    id: atlasv3_frozen_atlas_pt
+    group: frozen_prototype_suite
+    model: atlas_v3
+    label: ATLAS-TF + train-only prototype tuning
+    factor: full_method
+    value: prototype_tuned
+    overrides:
+      atlasv3_distribution_mode: atlas_pt
+
+  atlasv3_frozen_proto_oas_lda:
+    id: atlasv3_frozen_proto_oas_lda
+    group: frozen_prototype_suite
+    model: atlas_v3
+    label: Frozen FEATHER + train-only OAS-LDA prototypes
+    factor: prototype_metric
+    value: oas_shrinkage_lda
+    overrides:
+      atlasv3_distribution_mode: oas_lda
+
+  atlasv3_frozen_proto:
+    id: atlasv3_frozen_proto
+    group: frozen_prototype_suite
+    model: atlas_v3
+    label: Frozen FEATHER continual NCM
+    factor: classifier
+    value: prototype
+    overrides:
+      atlasv3_distribution_mode: prototype
