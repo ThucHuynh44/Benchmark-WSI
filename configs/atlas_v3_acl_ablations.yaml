@@ -2,7 +2,7 @@ defaults:
   config: configs/methods.yaml
   backbone: feather
   result_root: ablations/atlas_v3_acl
-  expected_variants: 14
+  expected_variants: 18
 
 variants:
   atlasv3_acl:
@@ -130,3 +130,39 @@ variants:
     factor: historical_statistics
     value: oracle_recompute
     overrides: {atlasv3_acl_mode: oas_oracle}
+
+  atlasv3_acl_normalized_oas_static:
+    id: atlasv3_acl_normalized_oas_static
+    group: normalized_oas_diagnostic
+    model: atlas_v3_acl
+    label: ACL-only adaptation with static normalized OAS-LDA statistics
+    factor: normalized_historical_statistics
+    value: static
+    overrides: {atlasv3_acl_mode: normalized_oas_static}
+
+  atlasv3_acl_histneg_normalized_oas_static:
+    id: atlasv3_acl_histneg_normalized_oas_static
+    group: normalized_oas_diagnostic
+    model: atlas_v3_acl
+    label: ACL historical negatives with static normalized OAS-LDA statistics
+    factor: normalized_historical_negatives
+    value: enabled
+    overrides: {atlasv3_acl_mode: histneg_normalized_oas_static}
+
+  atlasv3_acl_histneg_transport_normalized_oas:
+    id: atlasv3_acl_histneg_transport_normalized_oas
+    group: normalized_oas_diagnostic
+    model: atlas_v3_acl
+    label: ACL historical negatives with ungated normalized OAS-LDA transport
+    factor: normalized_historical_transport
+    value: ungated_transport
+    overrides: {atlasv3_acl_mode: histneg_transport_normalized_oas}
+
+  atlasv3_acl_gated_transport_normalized_oas:
+    id: atlasv3_acl_gated_transport_normalized_oas
+    group: normalized_oas_diagnostic
+    model: atlas_v3_acl
+    label: ACL historical negatives with gated normalized OAS-LDA transport
+    factor: normalized_historical_statistics
+    value: gated_transport
+    overrides: {atlasv3_acl_mode: gated_normalized_oas}

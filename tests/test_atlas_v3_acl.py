@@ -11,7 +11,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from models.atlas_v3_acl import ACL_MODES, OAS_MODES, build_model_from_components
+from models.atlas_v3_acl import (
+    ACL_MODES,
+    NORMALIZED_OAS_MODES,
+    OAS_MODES,
+    build_model_from_components,
+)
 from models.utils.atlas_transport import (
     bootstrap_gates,
     fit_lowrank_residual,
@@ -142,10 +147,10 @@ def learn_task(model, task):
 
 
 class AtlasV3ACLRegistryTests(unittest.TestCase):
-    def test_registry_has_exactly_fourteen_non_confounded_settings(self):
+    def test_registry_has_exactly_eighteen_non_confounded_settings(self):
         registry = load_registry(REGISTRY)
         self.assertEqual(tuple(registry["variants"]), SETTING_IDS)
-        self.assertEqual(len(SETTING_IDS), 14)
+        self.assertEqual(len(SETTING_IDS), 18)
         self.assertIn("atlasv3_acl_histneg_lowrank_transport", SETTING_IDS)
         for variant_id, variant in registry["variants"].items():
             self.assertEqual(variant["overrides"], {"atlasv3_acl_mode": EXPECTED_MODES[variant_id]})
@@ -249,6 +254,78 @@ class AtlasV3ACLTests(unittest.TestCase):
         self.assertTrue(metadata["revisits_old_train_data"])
         self.assertIn("oracle_recompute_with_drift_probe", metadata["implementation_semantics"])
         json.dumps(oracle.get_run_metadata(), allow_nan=False)
+
+    def test_normalized_oas_static_uses_normalized_statistics_and_no_histneg(self):
+        model = build(args(atlasv3_acl_mode="normalized_oas_static"))
+        dataset = learn_task(model, 0)
+        raw, labels, _ = model._collect_loader(dataset.train_loader)
+        normalized = F.normalize(raw.float(), dim=1, eps=1.0e-8)
+        for label in range(2):
+            expected = normalized[labels == label].mean(0)
+            self.assertTrue(torch.allclose(model.net.raw_mean[label].cpu(), expected, atol=1e-6))
+
+        features, coords, patch_size, _ = bag(0, patches=9)
+        prepared = model.prepare_inputs(features, coords, patch_size, training=False)
+        embedding = model.net.encode(*prepared)
+        expected_logits = F.linear(
+            F.normalize(embedding.float(), dim=1, eps=1.0e-8),
+            model.net.lda_weight,
+            model.net.lda_bias,
+        )
+        actual_logits = model(features, coords, patch_size)[0]
+        self.assertTrue(torch.allclose(actual_logits[:, :2], expected_logits[:, :2], atol=1e-6))
+
+        second = TaskData(1, task_values(1))
+        model.begin_task(second)
+        batch = next(iter(second.train_loader))
+        prepared = model.prepare_inputs(
+            batch.features, batch.coords, batch.patch_size_level0, training=True
+        )
+        metrics = model.observe(*prepared, batch.labels, task=1)
+        self.assertEqual(metrics["loss_histneg"], 0.0)
+
+    def test_gated_normalized_oas_transports_distribution_statistics(self):
+        model = build(args(atlasv3_acl_mode="gated_normalized_oas"))
+        learn_task(model, 0)
+        learn_task(model, 1)
+        row = model.transport_history[-1]
+        self.assertEqual(row["transport_kind"], "gated_normalized_oas")
+        self.assertIn("coverage_mean", row)
+        self.assertIn("step_gate_mean", row)
+        self.assertTrue(torch.isfinite(model.net.raw_mean[:4]).all())
+        self.assertEqual(NORMALIZED_OAS_MODES, {
+            "normalized_oas_static", "histneg_normalized_oas_static",
+            "histneg_transport_normalized_oas", "gated_normalized_oas",
+        })
+
+    def test_histneg_normalized_oas_static_adds_histneg_without_transport(self):
+        model = build(args(atlasv3_acl_mode="histneg_normalized_oas_static"))
+        learn_task(model, 0)
+        old_mean = model.net.raw_mean[:2].clone()
+        second = TaskData(1, task_values(1))
+        model.begin_task(second)
+        batch = next(iter(second.train_loader))
+        prepared = model.prepare_inputs(
+            batch.features, batch.coords, batch.patch_size_level0, training=True
+        )
+        metrics = model.observe(*prepared, batch.labels, task=1)
+        self.assertGreater(metrics["loss_histneg"], 0.0)
+        model.end_task(second)
+        self.assertTrue(torch.equal(model.net.raw_mean[:2], old_mean))
+        self.assertEqual(
+            model.transport_history[-1]["transport_fallback_reason"],
+            "static_old_statistics",
+        )
+
+    def test_histneg_transport_normalized_oas_is_ungated(self):
+        model = build(args(atlasv3_acl_mode="histneg_transport_normalized_oas"))
+        learn_task(model, 0)
+        learn_task(model, 1)
+        row = model.transport_history[-1]
+        self.assertEqual(row["transport_kind"], "histneg_transport_normalized_oas")
+        self.assertNotIn("coverage_mean", row)
+        self.assertNotIn("step_gate_mean", row)
+        self.assertTrue(torch.isfinite(model.net.raw_mean[:4]).all())
 
     def test_histneg_is_zero_on_first_task_and_positive_afterward(self):
         model = build(args(atlasv3_acl_mode="histneg"))

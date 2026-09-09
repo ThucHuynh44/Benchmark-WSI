@@ -26,6 +26,10 @@ OAS_DIAGNOSTIC_SEMANTICS = {
     "oas_static": "acl_histneg_raw_oas_static_no_transport_no_gate_v1",
     "oas_transport": "acl_histneg_raw_oas_ungated_lowrank_transport_v1",
     "oas_oracle": "acl_histneg_raw_oas_oracle_recompute_with_drift_probe_v1",
+    "normalized_oas_static": "acl_only_normalized_oas_static_no_transport_v1",
+    "histneg_normalized_oas_static": "acl_histneg_normalized_oas_static_no_transport_v1",
+    "histneg_transport_normalized_oas": "acl_histneg_normalized_oas_ungated_lowrank_transport_v1",
+    "gated_normalized_oas": "acl_histneg_normalized_oas_gated_lowrank_transport_v1",
 }
 
 

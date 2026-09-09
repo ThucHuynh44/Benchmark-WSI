@@ -105,11 +105,22 @@ def _rows(model, dataset, fold: int, after_task: int):
             }
             if model.mode in {
                 "gated_oas", "frozen_raw_oas", "oas_static",
-                "oas_transport", "oas_oracle",
+                "oas_transport", "oas_oracle", "normalized_oas_static",
+                "histneg_normalized_oas_static",
+                "histneg_transport_normalized_oas",
+                "gated_normalized_oas",
             }:
-                oracle_mean = class_raw.mean(0)
-                centered = class_raw - oracle_mean
-                oracle_covariance = centered.t() @ centered / float(max(class_raw.shape[0] - 1, 1))
+                class_statistics = (
+                    class_norm
+                    if model.mode in {
+                        "normalized_oas_static", "histneg_normalized_oas_static",
+                        "histneg_transport_normalized_oas", "gated_normalized_oas",
+                    }
+                    else class_raw
+                )
+                oracle_mean = class_statistics.mean(0)
+                centered = class_statistics - oracle_mean
+                oracle_covariance = centered.t() @ centered / float(max(class_statistics.shape[0] - 1, 1))
                 stored_mean = model.net.raw_mean[label].cpu().float()
                 stored_covariance = model.net.raw_scatter[label].cpu().float() / float(max(int(model.net.raw_count[label]) - 1, 1))
                 row["raw_mean_relative_error"] = float(

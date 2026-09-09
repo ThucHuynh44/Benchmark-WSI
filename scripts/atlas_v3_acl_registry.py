@@ -27,6 +27,10 @@ SETTING_IDS = (
     "atlasv3_acl_oas_static",
     "atlasv3_acl_oas_transport",
     "atlasv3_acl_oas_oracle",
+    "atlasv3_acl_normalized_oas_static",
+    "atlasv3_acl_histneg_normalized_oas_static",
+    "atlasv3_acl_histneg_transport_normalized_oas",
+    "atlasv3_acl_gated_transport_normalized_oas",
 )
 
 EXPECTED_MODES = {
@@ -44,6 +48,10 @@ EXPECTED_MODES = {
     "atlasv3_acl_oas_static": "oas_static",
     "atlasv3_acl_oas_transport": "oas_transport",
     "atlasv3_acl_oas_oracle": "oas_oracle",
+    "atlasv3_acl_normalized_oas_static": "normalized_oas_static",
+    "atlasv3_acl_histneg_normalized_oas_static": "histneg_normalized_oas_static",
+    "atlasv3_acl_histneg_transport_normalized_oas": "histneg_transport_normalized_oas",
+    "atlasv3_acl_gated_transport_normalized_oas": "gated_normalized_oas",
 }
 
 

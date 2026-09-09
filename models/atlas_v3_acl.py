@@ -44,24 +44,46 @@ ACL_MODES = (
     "oas_static",
     "oas_transport",
     "oas_oracle",
+    "normalized_oas_static",
+    "histneg_normalized_oas_static",
+    "histneg_transport_normalized_oas",
+    "gated_normalized_oas",
 )
 TRANSPORT_MODES = {
     "sdc", "ldc", "sldc", "lowrank", "histneg_lowrank",
     "gated", "gated_oas", "gated_task_margin", "oas_transport",
+    "histneg_transport_normalized_oas", "gated_normalized_oas",
 }
 HISTNEG_MODES = {
     "histneg", "histneg_lowrank", "gated", "gated_oas",
     "gated_task_margin", "oas_static", "oas_transport", "oas_oracle",
+    "histneg_normalized_oas_static", "histneg_transport_normalized_oas",
+    "gated_normalized_oas",
 }
-GATED_MODES = {"gated", "gated_oas", "gated_task_margin"}
+GATED_MODES = {
+    "gated", "gated_oas", "gated_task_margin", "gated_normalized_oas",
+}
 OAS_MODES = {
     "gated_oas", "frozen_raw_oas", "oas_static", "oas_transport", "oas_oracle",
+    "normalized_oas_static", "histneg_normalized_oas_static",
+    "histneg_transport_normalized_oas", "gated_normalized_oas",
 }
 RAW_TRANSPORT_MODES = {"gated_oas", "oas_transport"}
+NORMALIZED_OAS_MODES = {
+    "normalized_oas_static", "histneg_normalized_oas_static",
+    "histneg_transport_normalized_oas", "gated_normalized_oas",
+}
+OAS_TRANSPORT_MODES = RAW_TRANSPORT_MODES | {
+    "histneg_transport_normalized_oas", "gated_normalized_oas",
+}
 OAS_DIAGNOSTIC_SEMANTICS = {
     "oas_static": "acl_histneg_raw_oas_static_no_transport_no_gate_v1",
     "oas_transport": "acl_histneg_raw_oas_ungated_lowrank_transport_v1",
     "oas_oracle": "acl_histneg_raw_oas_oracle_recompute_with_drift_probe_v1",
+    "normalized_oas_static": "acl_only_normalized_oas_static_no_transport_v1",
+    "histneg_normalized_oas_static": "acl_histneg_normalized_oas_static_no_transport_v1",
+    "histneg_transport_normalized_oas": "acl_histneg_normalized_oas_ungated_lowrank_transport_v1",
+    "gated_normalized_oas": "acl_histneg_normalized_oas_gated_lowrank_transport_v1",
 }
 
 
@@ -143,6 +165,7 @@ class AtlasV3ACLNetwork(nn.Module):
         self.classifier = backbone.get_classifier()
         self.num_classes = int(num_classes)
         self.embedding_dim = int(embedding_dim)
+        self.mode = str(mode)
         self.register_buffer("class_task", torch.as_tensor(class_task, dtype=torch.long))
         self.register_buffer("prototype_bank", torch.zeros(num_classes, embedding_dim))
         self.register_buffer("prototype_valid", torch.zeros(num_classes, dtype=torch.bool))
@@ -172,7 +195,10 @@ class AtlasV3ACLNetwork(nn.Module):
         elif use_lda:
             if not bool(self.lda_fitted):
                 raise RuntimeError("ATLAS-v3 ACL OAS-LDA has not been fitted")
-            logits = F.linear(embedding.float(), self.lda_weight, self.lda_bias)
+            features = embedding.float()
+            if self.mode in NORMALIZED_OAS_MODES:
+                features = F.normalize(features, dim=1, eps=1.0e-8)
+            logits = F.linear(features, self.lda_weight, self.lda_bias)
         else:
             z = F.normalize(embedding.float(), dim=1, eps=1.0e-8)
             prototypes = F.normalize(self.prototype_bank, dim=1, eps=1.0e-8)
@@ -423,7 +449,9 @@ class AtlasV3ACL(ContinualModel):
         if self.old_class_count == 0:
             row.update({"effective_rank": 0.0, "transport_fallback_reason": "no_old_classes"})
             return row
-        if self.mode == "oas_static":
+        if self.mode in {
+            "oas_static", "normalized_oas_static", "histneg_normalized_oas_static",
+        }:
             row.update({"effective_rank": 0.0, "transport_fallback_reason": "static_old_statistics"})
             return row
         if self.mode not in TRANSPORT_MODES:
@@ -455,10 +483,15 @@ class AtlasV3ACL(ContinualModel):
             row.update({"effective_rank": float(self.embedding_dim), "transport_fallback_reason": ""})
             return row
 
-        raw_oas = self.mode in RAW_TRANSPORT_MODES
-        source = pre_raw.to(device) if raw_oas else source_norm
-        target = post_raw.to(device) if raw_oas else target_norm
-        points = self.net.raw_mean[:self.old_class_count].detach().float().to(device) if raw_oas else old
+        oas_transport = self.mode in OAS_TRANSPORT_MODES
+        raw_transport = self.mode in RAW_TRANSPORT_MODES
+        source = pre_raw.to(device) if raw_transport else source_norm
+        target = post_raw.to(device) if raw_transport else target_norm
+        points = (
+            self.net.raw_mean[:self.old_class_count].detach().float().to(device)
+            if oas_transport
+            else old
+        )
         main = fit_lowrank_residual(source, target, rank=rank, ridge=ridge)
         row.update(main.diagnostics)
         if self.mode in GATED_MODES:
@@ -470,7 +503,7 @@ class AtlasV3ACL(ContinualModel):
                     source,
                     energy=float(self.args.atlasv3_acl_coverage_energy),
                 )
-                if raw_oas
+                if oas_transport
                 else mean_coverage(points, source, energy=float(self.args.atlasv3_acl_coverage_energy))
             )
             gates, uncertainty, bootstrap = bootstrap_gates(
@@ -493,7 +526,7 @@ class AtlasV3ACL(ContinualModel):
         mapped = main.map(points, gates)
         if not torch.isfinite(mapped).all():
             raise FloatingPointError("ATLAS-v3 ACL transport produced non-finite means")
-        if raw_oas:
+        if oas_transport:
             self.net.raw_mean[:self.old_class_count].copy_(mapped.to(self.net.raw_mean))
             identity = torch.eye(self.embedding_dim, device=device)
             for label in range(self.old_class_count):
@@ -524,10 +557,11 @@ class AtlasV3ACL(ContinualModel):
                 raise RuntimeError(f"Post-adaptation train split has no class {label}")
             if not torch.isfinite(raw).all():
                 raise FloatingPointError(f"Post-adaptation class {label} contains non-finite embeddings")
-            prototype = (
-                F.normalize(raw.mean(0), dim=0, eps=1.0e-8)
-                if self.mode in OAS_MODES
-                else F.normalize(norm.mean(0), dim=0, eps=1.0e-8)
+            statistics = norm.to(self.net.raw_mean) if self.mode in NORMALIZED_OAS_MODES else raw
+            prototype = F.normalize(
+                statistics.mean(0) if self.mode in OAS_MODES else norm.mean(0),
+                dim=0,
+                eps=1.0e-8,
             )
             self.net.prototype_bank[label].copy_(prototype.to(self.net.prototype_bank))
             self.net.prototype_valid[label] = True
@@ -536,9 +570,9 @@ class AtlasV3ACL(ContinualModel):
             self.net.last_coverage[label] = 1.0
             self.net.last_step_gate[label] = 1.0
             if self.mode in OAS_MODES:
-                mean = raw.mean(0)
-                centered = raw - mean
-                self.net.raw_count[label] = int(raw.shape[0])
+                mean = statistics.mean(0)
+                centered = statistics - mean
+                self.net.raw_count[label] = int(statistics.shape[0])
                 self.net.raw_mean[label].copy_(mean)
                 self.net.raw_scatter[label].copy_(centered.t() @ centered)
 
