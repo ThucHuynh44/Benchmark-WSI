@@ -28,7 +28,10 @@ SETTING_IDS = (
     "atlasv3_acl_oas_transport",
     "atlasv3_acl_oas_oracle",
     "atlasv3_acl_normalized_oas_static",
+    "atlasv3_acl_transport_normalized_oas",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg",
     "atlasv3_acl_histneg_normalized_oas_static",
+    "atlasv3_acl_histneg_normalized_oas_static_w01",
     "atlasv3_acl_histneg_transport_normalized_oas",
     "atlasv3_acl_gated_transport_normalized_oas",
 )
@@ -49,7 +52,10 @@ EXPECTED_MODES = {
     "atlasv3_acl_oas_transport": "oas_transport",
     "atlasv3_acl_oas_oracle": "oas_oracle",
     "atlasv3_acl_normalized_oas_static": "normalized_oas_static",
+    "atlasv3_acl_transport_normalized_oas": "transport_normalized_oas",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg": "gated_transport_normalized_oas_no_histneg",
     "atlasv3_acl_histneg_normalized_oas_static": "histneg_normalized_oas_static",
+    "atlasv3_acl_histneg_normalized_oas_static_w01": "histneg_normalized_oas_static",
     "atlasv3_acl_histneg_transport_normalized_oas": "histneg_transport_normalized_oas",
     "atlasv3_acl_gated_transport_normalized_oas": "gated_normalized_oas",
 }
@@ -85,6 +91,8 @@ def load_registry(path: str | Path) -> Dict[str, Any]:
         if entry["id"] != variant_id or entry["model"] != "atlas_v3_acl":
             raise ValueError(f"ATLAS-v3 ACL identity mismatch for {variant_id}")
         expected = {"atlasv3_acl_mode": EXPECTED_MODES[variant_id]}
+        if variant_id == "atlasv3_acl_histneg_normalized_oas_static_w01":
+            expected["atlasv3_acl_hist_weight"] = 0.1
         if entry["overrides"] != expected:
             raise ValueError(f"{variant_id} must only select {expected!r}")
         resolved = load_experiment_config(str(config_path), method="atlas_v3_acl", backbone="feather")

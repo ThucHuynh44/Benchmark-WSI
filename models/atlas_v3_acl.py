@@ -45,6 +45,8 @@ ACL_MODES = (
     "oas_transport",
     "oas_oracle",
     "normalized_oas_static",
+    "transport_normalized_oas",
+    "gated_transport_normalized_oas_no_histneg",
     "histneg_normalized_oas_static",
     "histneg_transport_normalized_oas",
     "gated_normalized_oas",
@@ -52,6 +54,7 @@ ACL_MODES = (
 TRANSPORT_MODES = {
     "sdc", "ldc", "sldc", "lowrank", "histneg_lowrank",
     "gated", "gated_oas", "gated_task_margin", "oas_transport",
+    "transport_normalized_oas", "gated_transport_normalized_oas_no_histneg",
     "histneg_transport_normalized_oas", "gated_normalized_oas",
 }
 HISTNEG_MODES = {
@@ -61,19 +64,23 @@ HISTNEG_MODES = {
     "gated_normalized_oas",
 }
 GATED_MODES = {
-    "gated", "gated_oas", "gated_task_margin", "gated_normalized_oas",
+    "gated", "gated_oas", "gated_task_margin",
+    "gated_transport_normalized_oas_no_histneg", "gated_normalized_oas",
 }
 OAS_MODES = {
     "gated_oas", "frozen_raw_oas", "oas_static", "oas_transport", "oas_oracle",
     "normalized_oas_static", "histneg_normalized_oas_static",
+    "transport_normalized_oas", "gated_transport_normalized_oas_no_histneg",
     "histneg_transport_normalized_oas", "gated_normalized_oas",
 }
 RAW_TRANSPORT_MODES = {"gated_oas", "oas_transport"}
 NORMALIZED_OAS_MODES = {
     "normalized_oas_static", "histneg_normalized_oas_static",
+    "transport_normalized_oas", "gated_transport_normalized_oas_no_histneg",
     "histneg_transport_normalized_oas", "gated_normalized_oas",
 }
 OAS_TRANSPORT_MODES = RAW_TRANSPORT_MODES | {
+    "transport_normalized_oas", "gated_transport_normalized_oas_no_histneg",
     "histneg_transport_normalized_oas", "gated_normalized_oas",
 }
 OAS_DIAGNOSTIC_SEMANTICS = {
@@ -81,6 +88,8 @@ OAS_DIAGNOSTIC_SEMANTICS = {
     "oas_transport": "acl_histneg_raw_oas_ungated_lowrank_transport_v1",
     "oas_oracle": "acl_histneg_raw_oas_oracle_recompute_with_drift_probe_v1",
     "normalized_oas_static": "acl_only_normalized_oas_static_no_transport_v1",
+    "transport_normalized_oas": "acl_only_normalized_oas_ungated_lowrank_transport_v1",
+    "gated_transport_normalized_oas_no_histneg": "acl_only_normalized_oas_gated_lowrank_transport_v1",
     "histneg_normalized_oas_static": "acl_histneg_normalized_oas_static_no_transport_v1",
     "histneg_transport_normalized_oas": "acl_histneg_normalized_oas_ungated_lowrank_transport_v1",
     "gated_normalized_oas": "acl_histneg_normalized_oas_gated_lowrank_transport_v1",
@@ -105,6 +114,18 @@ def get_parser() -> ArgumentParser:
     parser.add_argument("--atlasv3_acl_hist_topk", type=int, default=8)
     parser.add_argument("--atlasv3_acl_transport_rank", type=int, default=8)
     parser.add_argument("--atlasv3_acl_transport_ridge", type=float, default=1.0e-3)
+    parser.add_argument(
+        "--atlasv3_acl_transport_mean_scale",
+        type=float,
+        default=1.0,
+        help="Multiplier in [0,1] applied to the estimated historical-mean transport step.",
+    )
+    parser.add_argument(
+        "--atlasv3_acl_transport_cov_scale",
+        type=float,
+        default=1.0,
+        help="Multiplier in [0,1] applied to the estimated historical-covariance transport step.",
+    )
     parser.add_argument("--atlasv3_acl_ldc_steps", type=int, default=100)
     parser.add_argument("--atlasv3_acl_ldc_lr", type=float, default=1.0e-3)
     parser.add_argument("--atlasv3_acl_sdc_sigma", type=float, default=0.3)
@@ -143,6 +164,13 @@ def validate_args(args) -> None:
         raise ValueError("atlasv3_acl_hist_topk must be positive")
     if int(getattr(args, "atlasv3_acl_transport_rank", 0)) <= 0:
         raise ValueError("atlasv3_acl_transport_rank must be positive")
+    for name in (
+        "atlasv3_acl_transport_mean_scale",
+        "atlasv3_acl_transport_cov_scale",
+    ):
+        value = float(getattr(args, name, -1.0))
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be in [0,1]")
     if int(getattr(args, "atlasv3_acl_ldc_steps", 0)) <= 0:
         raise ValueError("atlasv3_acl_ldc_steps must be positive")
     if int(getattr(args, "atlasv3_acl_bootstrap_samples", -1)) < 0:
@@ -518,19 +546,26 @@ class AtlasV3ACL(ContinualModel):
             row.update(summarize(gates, "step_gate"))
             row.update(summarize(uncertainty, "bootstrap_uncertainty"))
             self.net.last_coverage[:self.old_class_count].copy_(coverage.to(self.net.last_coverage))
-            self.net.last_step_gate[:self.old_class_count].copy_(gates.to(self.net.last_step_gate))
-            self._update_reliability(gates, uncertainty)
         else:
             gates = torch.ones(self.old_class_count, device=device)
             uncertainty = torch.full_like(gates, float("nan"))
-        mapped = main.map(points, gates)
+        mean_gates = gates * float(self.args.atlasv3_acl_transport_mean_scale)
+        covariance_gates = gates * float(self.args.atlasv3_acl_transport_cov_scale)
+        row.update(summarize(mean_gates, "applied_mean_gate"))
+        if oas_transport:
+            row.update(summarize(covariance_gates, "applied_covariance_gate"))
+        self.net.last_step_gate[:self.old_class_count].copy_(
+            mean_gates.to(self.net.last_step_gate)
+        )
+        self._update_reliability(mean_gates, uncertainty)
+        mapped = main.map(points, mean_gates)
         if not torch.isfinite(mapped).all():
             raise FloatingPointError("ATLAS-v3 ACL transport produced non-finite means")
         if oas_transport:
             self.net.raw_mean[:self.old_class_count].copy_(mapped.to(self.net.raw_mean))
             identity = torch.eye(self.embedding_dim, device=device)
             for label in range(self.old_class_count):
-                transform = identity + gates[label] * main.delta
+                transform = identity + covariance_gates[label] * main.delta
                 scatter = self.net.raw_scatter[label].to(device)
                 transported = transform.t() @ scatter @ transform
                 transported = 0.5 * (transported + transported.t())

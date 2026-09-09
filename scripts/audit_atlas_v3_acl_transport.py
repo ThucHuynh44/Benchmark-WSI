@@ -106,6 +106,8 @@ def _rows(model, dataset, fold: int, after_task: int):
             if model.mode in {
                 "gated_oas", "frozen_raw_oas", "oas_static",
                 "oas_transport", "oas_oracle", "normalized_oas_static",
+                "transport_normalized_oas",
+                "gated_transport_normalized_oas_no_histneg",
                 "histneg_normalized_oas_static",
                 "histneg_transport_normalized_oas",
                 "gated_normalized_oas",
@@ -114,6 +116,8 @@ def _rows(model, dataset, fold: int, after_task: int):
                     class_norm
                     if model.mode in {
                         "normalized_oas_static", "histneg_normalized_oas_static",
+                        "transport_normalized_oas",
+                        "gated_transport_normalized_oas_no_histneg",
                         "histneg_transport_normalized_oas", "gated_normalized_oas",
                     }
                     else class_raw

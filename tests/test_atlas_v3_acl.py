@@ -67,6 +67,8 @@ def args(**overrides):
         atlasv3_acl_hist_weight=1.0, atlasv3_acl_hist_temperature=0.1,
         atlasv3_acl_hist_margin=0.2, atlasv3_acl_hist_topk=2,
         atlasv3_acl_transport_rank=2, atlasv3_acl_transport_ridge=1e-3,
+        atlasv3_acl_transport_mean_scale=1.0,
+        atlasv3_acl_transport_cov_scale=1.0,
         atlasv3_acl_ldc_steps=3, atlasv3_acl_ldc_lr=1e-2,
         atlasv3_acl_sdc_sigma=0.3, atlasv3_acl_coverage_energy=0.95,
         atlasv3_acl_bootstrap_samples=6, atlasv3_acl_uncertainty_beta=10.0,
@@ -147,16 +149,24 @@ def learn_task(model, task):
 
 
 class AtlasV3ACLRegistryTests(unittest.TestCase):
-    def test_registry_has_exactly_eighteen_non_confounded_settings(self):
+    def test_registry_has_exactly_twenty_one_non_confounded_settings(self):
         registry = load_registry(REGISTRY)
         self.assertEqual(tuple(registry["variants"]), SETTING_IDS)
-        self.assertEqual(len(SETTING_IDS), 18)
+        self.assertEqual(len(SETTING_IDS), 21)
         self.assertIn("atlasv3_acl_histneg_lowrank_transport", SETTING_IDS)
         for variant_id, variant in registry["variants"].items():
-            self.assertEqual(variant["overrides"], {"atlasv3_acl_mode": EXPECTED_MODES[variant_id]})
+            expected = {"atlasv3_acl_mode": EXPECTED_MODES[variant_id]}
+            if variant_id == "atlasv3_acl_histneg_normalized_oas_static_w01":
+                expected["atlasv3_acl_hist_weight"] = 0.1
+            self.assertEqual(variant["overrides"], expected)
             command = build_command(registry, variant, 2)
             self.assertIn("atlas_v3_acl", command)
             self.assertIn("feather", command)
+
+        weighted = registry["variants"]["atlasv3_acl_histneg_normalized_oas_static_w01"]
+        command = build_command(registry, weighted, 2)
+        weight_index = command.index("--atlasv3_acl_hist_weight")
+        self.assertEqual(command[weight_index + 1], "0.1")
 
     def test_training_model_has_no_old_validation_or_exemplar_path(self):
         source = (ROOT / "models" / "atlas_v3_acl.py").read_text(encoding="utf-8")
@@ -295,8 +305,50 @@ class AtlasV3ACLTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(model.net.raw_mean[:4]).all())
         self.assertEqual(NORMALIZED_OAS_MODES, {
             "normalized_oas_static", "histneg_normalized_oas_static",
+            "transport_normalized_oas",
+            "gated_transport_normalized_oas_no_histneg",
             "histneg_transport_normalized_oas", "gated_normalized_oas",
         })
+
+    def test_normalized_oas_transport_controls_exclude_histneg(self):
+        for mode, gated in (
+            ("transport_normalized_oas", False),
+            ("gated_transport_normalized_oas_no_histneg", True),
+        ):
+            with self.subTest(mode=mode):
+                model = build(args(atlasv3_acl_mode=mode))
+                learn_task(model, 0)
+                second = TaskData(1, task_values(1))
+                model.begin_task(second)
+                batch = next(iter(second.train_loader))
+                prepared = model.prepare_inputs(
+                    batch.features,
+                    batch.coords,
+                    batch.patch_size_level0,
+                    training=True,
+                )
+                metrics = model.observe(*prepared, batch.labels, task=1)
+                self.assertEqual(metrics["loss_histneg"], 0.0)
+                model.end_task(second)
+                row = model.transport_history[-1]
+                self.assertEqual(row["transport_kind"], mode)
+                self.assertEqual("step_gate_mean" in row, gated)
+
+    def test_zero_transport_scales_are_an_exact_static_statistics_control(self):
+        model = build(args(
+            atlasv3_acl_mode="gated_transport_normalized_oas_no_histneg",
+            atlasv3_acl_transport_mean_scale=0.0,
+            atlasv3_acl_transport_cov_scale=0.0,
+        ))
+        learn_task(model, 0)
+        old_mean = model.net.raw_mean[:2].clone()
+        old_scatter = model.net.raw_scatter[:2].clone()
+        learn_task(model, 1)
+        self.assertTrue(torch.equal(model.net.raw_mean[:2], old_mean))
+        self.assertTrue(torch.equal(model.net.raw_scatter[:2], old_scatter))
+        row = model.transport_history[-1]
+        self.assertEqual(row["applied_mean_gate_mean"], 0.0)
+        self.assertEqual(row["applied_covariance_gate_mean"], 0.0)
 
     def test_histneg_normalized_oas_static_adds_histneg_without_transport(self):
         model = build(args(atlasv3_acl_mode="histneg_normalized_oas_static"))
