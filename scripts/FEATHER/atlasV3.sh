@@ -20,9 +20,6 @@ REPO_ROOT=/datastore/uittogether/LuuTru/Thuchd/benchmarkWSI/version_moi/Benchmar
 JOB_LABEL="atlasV3ACL_1"
 VARIANTS=(
     atlasv3_acl
-    atlasv3_acl_histneg
-    atlasv3_acl_sdc
-    atlasv3_acl_ldc
 )
 
 if [[ "$ACTION" != "run" && "$ACTION" != "resume" ]]; then

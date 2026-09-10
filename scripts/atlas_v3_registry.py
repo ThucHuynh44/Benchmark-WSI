@@ -13,31 +13,13 @@ from configs.experiment_loader import load_experiment_config
 
 
 SETTING_IDS = (
-    "atlasv3_frozen_proto_diag",
-    "atlasv3_frozen_proto_diag_shrink",
-    "atlasv3_frozen_proto_lowrank",
-    "atlasv3_frozen_proto_task_centroid",
-    "atlasv3_frozen_proto_task_lme",
-    "atlasv3_frozen_proto_multi",
-    "atlasv3_frozen_proto_pt_only",
-    "atlasv3_frozen_atlas_tf",
-    "atlasv3_frozen_atlas_pt",
-    "atlasv3_frozen_proto_oas_lda",
     "atlasv3_frozen_proto",
+    "atlasv3_frozen_proto_oas_lda",
 )
 
 EXPECTED_MODES = {
-    "atlasv3_frozen_proto_diag": "diag",
-    "atlasv3_frozen_proto_diag_shrink": "diag_shrink",
-    "atlasv3_frozen_proto_lowrank": "lowrank",
-    "atlasv3_frozen_proto_task_centroid": "task_centroid",
-    "atlasv3_frozen_proto_task_lme": "task_lme",
-    "atlasv3_frozen_proto_multi": "multi",
-    "atlasv3_frozen_proto_pt_only": "pt_only",
-    "atlasv3_frozen_atlas_tf": "atlas_tf",
-    "atlasv3_frozen_atlas_pt": "atlas_pt",
-    "atlasv3_frozen_proto_oas_lda": "oas_lda",
     "atlasv3_frozen_proto": "prototype",
+    "atlasv3_frozen_proto_oas_lda": "oas_lda",
 }
 
 

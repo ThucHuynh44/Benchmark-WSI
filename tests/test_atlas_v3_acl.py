@@ -1,6 +1,5 @@
 import copy
 from collections import namedtuple
-import json
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -19,8 +18,8 @@ from models.atlas_v3_acl import (
 )
 from models.utils.atlas_transport import (
     bootstrap_gates,
+    distribution_coverage,
     fit_lowrank_residual,
-    mean_coverage,
 )
 from scripts.atlas_v3_acl_registry import EXPECTED_MODES, SETTING_IDS, load_registry
 from scripts.run_atlas_v3_acl_ablations import build_command
@@ -64,17 +63,11 @@ def args(**overrides):
         task_num_classes=[2, 2], class_offsets=[0, 2],
         task_order=["brca", "nsclc"], seed=5, fold=1,
         atlasv3_acl_mode="acl", atlasv3_acl_temperature=0.1,
-        atlasv3_acl_hist_weight=1.0, atlasv3_acl_hist_temperature=0.1,
-        atlasv3_acl_hist_margin=0.2, atlasv3_acl_hist_topk=2,
         atlasv3_acl_transport_rank=2, atlasv3_acl_transport_ridge=1e-3,
         atlasv3_acl_transport_mean_scale=1.0,
         atlasv3_acl_transport_cov_scale=1.0,
-        atlasv3_acl_ldc_steps=3, atlasv3_acl_ldc_lr=1e-2,
-        atlasv3_acl_sdc_sigma=0.3, atlasv3_acl_coverage_energy=0.95,
+        atlasv3_acl_coverage_energy=0.95,
         atlasv3_acl_bootstrap_samples=6, atlasv3_acl_uncertainty_beta=10.0,
-        atlasv3_acl_reliability_floor=0.1,
-        atlasv3_acl_reliability_momentum=0.5,
-        atlasv3_acl_task_margin=0.2, atlasv3_acl_task_weight=0.1,
         ablation_id=None, ablation_group=None, ablation_config_hash=None,
     )
     values.update(overrides)
@@ -110,11 +103,6 @@ class TaskData:
         self.current_task = task + 1
         self.train_loader = DataLoader(Bags(values), batch_size=1, shuffle=True, collate_fn=collate)
 
-    def _datasets_for_task(self, task_id, fold):
-        dataset = Bags(task_values(int(task_id)))
-        return dataset, dataset, dataset
-
-
 def task_values(task):
     start = task * 2
     return [
@@ -149,24 +137,16 @@ def learn_task(model, task):
 
 
 class AtlasV3ACLRegistryTests(unittest.TestCase):
-    def test_registry_has_exactly_twenty_one_non_confounded_settings(self):
+    def test_registry_has_exactly_four_paper_settings(self):
         registry = load_registry(REGISTRY)
         self.assertEqual(tuple(registry["variants"]), SETTING_IDS)
-        self.assertEqual(len(SETTING_IDS), 21)
-        self.assertIn("atlasv3_acl_histneg_lowrank_transport", SETTING_IDS)
+        self.assertEqual(len(SETTING_IDS), 4)
         for variant_id, variant in registry["variants"].items():
             expected = {"atlasv3_acl_mode": EXPECTED_MODES[variant_id]}
-            if variant_id == "atlasv3_acl_histneg_normalized_oas_static_w01":
-                expected["atlasv3_acl_hist_weight"] = 0.1
             self.assertEqual(variant["overrides"], expected)
             command = build_command(registry, variant, 2)
             self.assertIn("atlas_v3_acl", command)
             self.assertIn("feather", command)
-
-        weighted = registry["variants"]["atlasv3_acl_histneg_normalized_oas_static_w01"]
-        command = build_command(registry, weighted, 2)
-        weight_index = command.index("--atlasv3_acl_hist_weight")
-        self.assertEqual(command[weight_index + 1], "0.1")
 
     def test_training_model_has_no_old_validation_or_exemplar_path(self):
         source = (ROOT / "models" / "atlas_v3_acl.py").read_text(encoding="utf-8")
@@ -192,7 +172,9 @@ class TransportTests(unittest.TestCase):
         target = source + 0.02 * torch.randn(12, 5)
         points = source[:3]
         main = fit_lowrank_residual(source, target, rank=2, ridge=1e-3)
-        coverage = mean_coverage(points, source, energy=0.95)
+        scatters = torch.eye(5).repeat(3, 1, 1)
+        counts = torch.full((3,), 4)
+        coverage = distribution_coverage(points, scatters, counts, source, energy=0.95)
         first = bootstrap_gates(points, source, target, coverage, main, rank=2, ridge=1e-3, samples=8, beta=10.0, seed=31)
         second = bootstrap_gates(points, source, target, coverage, main, rank=2, ridge=1e-3, samples=8, beta=10.0, seed=31)
         self.assertTrue(torch.equal(first[0], second[0]))
@@ -228,42 +210,6 @@ class AtlasV3ACLTests(unittest.TestCase):
                 if mode not in OAS_MODES:
                     self.assertEqual(model.net.raw_scatter.numel(), 0)
 
-    def test_static_and_oracle_oas_controls_are_explicit(self):
-        static = build(args(atlasv3_acl_mode="oas_static"))
-        learn_task(static, 0)
-        old_mean = static.net.raw_mean[:2].clone()
-        old_gate = static.net.last_step_gate[:2].clone()
-        learn_task(static, 1)
-        self.assertTrue(torch.equal(static.net.raw_mean[:2], old_mean))
-        self.assertTrue(torch.equal(static.net.last_step_gate[:2], old_gate))
-        self.assertEqual(
-            static.transport_history[-1]["transport_fallback_reason"],
-            "static_old_statistics",
-        )
-
-        oracle = build(args(atlasv3_acl_mode="oas_oracle"))
-        learn_task(oracle, 0)
-        learn_task(oracle, 1)
-        self.assertGreater(oracle.transport_history[-1]["oracle_revisited_wsis"], 0)
-        self.assertTrue(oracle.transport_history[-1]["diagnostic_only"])
-        class_rows = oracle.transport_history[-1]["oracle_class_diagnostics"]
-        self.assertEqual(len(class_rows), 2)
-        self.assertIn("mean_drift_cosine", class_rows[0])
-        self.assertIn("mean_residual_ungated_cosine", class_rows[0])
-        self.assertIn("mean_residual_gated_cosine", class_rows[0])
-        self.assertIn("covariance_drift_relative_frobenius", class_rows[0])
-        self.assertIn("covariance_residual_gated_relative_frobenius", class_rows[0])
-        for row in class_rows:
-            for key, value in row.items():
-                self.assertTrue(
-                    not isinstance(value, float) or torch.isfinite(torch.tensor(value)),
-                    msg=f"non-finite oracle diagnostic {key}={value}",
-                )
-        metadata = oracle.get_run_metadata()["atlas_v3_acl_config"]
-        self.assertTrue(metadata["diagnostic_only"])
-        self.assertTrue(metadata["revisits_old_train_data"])
-        self.assertIn("oracle_recompute_with_drift_probe", metadata["implementation_semantics"])
-        json.dumps(oracle.get_run_metadata(), allow_nan=False)
 
     def test_normalized_oas_static_uses_normalized_statistics_and_no_histneg(self):
         model = build(args(atlasv3_acl_mode="normalized_oas_static"))
@@ -292,22 +238,21 @@ class AtlasV3ACLTests(unittest.TestCase):
             batch.features, batch.coords, batch.patch_size_level0, training=True
         )
         metrics = model.observe(*prepared, batch.labels, task=1)
-        self.assertEqual(metrics["loss_histneg"], 0.0)
+        self.assertNotIn("loss_histneg", metrics)
 
-    def test_gated_normalized_oas_transports_distribution_statistics(self):
-        model = build(args(atlasv3_acl_mode="gated_normalized_oas"))
+    def test_main_method_transports_distribution_statistics(self):
+        mode = "gated_transport_normalized_oas_no_histneg"
+        model = build(args(atlasv3_acl_mode=mode))
         learn_task(model, 0)
         learn_task(model, 1)
         row = model.transport_history[-1]
-        self.assertEqual(row["transport_kind"], "gated_normalized_oas")
+        self.assertEqual(row["transport_kind"], mode)
         self.assertIn("coverage_mean", row)
         self.assertIn("step_gate_mean", row)
         self.assertTrue(torch.isfinite(model.net.raw_mean[:4]).all())
         self.assertEqual(NORMALIZED_OAS_MODES, {
-            "normalized_oas_static", "histneg_normalized_oas_static",
-            "transport_normalized_oas",
+            "normalized_oas_static", "transport_normalized_oas",
             "gated_transport_normalized_oas_no_histneg",
-            "histneg_transport_normalized_oas", "gated_normalized_oas",
         })
 
     def test_normalized_oas_transport_controls_exclude_histneg(self):
@@ -328,7 +273,7 @@ class AtlasV3ACLTests(unittest.TestCase):
                     training=True,
                 )
                 metrics = model.observe(*prepared, batch.labels, task=1)
-                self.assertEqual(metrics["loss_histneg"], 0.0)
+                self.assertNotIn("loss_histneg", metrics)
                 model.end_task(second)
                 row = model.transport_history[-1]
                 self.assertEqual(row["transport_kind"], mode)
@@ -350,50 +295,6 @@ class AtlasV3ACLTests(unittest.TestCase):
         self.assertEqual(row["applied_mean_gate_mean"], 0.0)
         self.assertEqual(row["applied_covariance_gate_mean"], 0.0)
 
-    def test_histneg_normalized_oas_static_adds_histneg_without_transport(self):
-        model = build(args(atlasv3_acl_mode="histneg_normalized_oas_static"))
-        learn_task(model, 0)
-        old_mean = model.net.raw_mean[:2].clone()
-        second = TaskData(1, task_values(1))
-        model.begin_task(second)
-        batch = next(iter(second.train_loader))
-        prepared = model.prepare_inputs(
-            batch.features, batch.coords, batch.patch_size_level0, training=True
-        )
-        metrics = model.observe(*prepared, batch.labels, task=1)
-        self.assertGreater(metrics["loss_histneg"], 0.0)
-        model.end_task(second)
-        self.assertTrue(torch.equal(model.net.raw_mean[:2], old_mean))
-        self.assertEqual(
-            model.transport_history[-1]["transport_fallback_reason"],
-            "static_old_statistics",
-        )
-
-    def test_histneg_transport_normalized_oas_is_ungated(self):
-        model = build(args(atlasv3_acl_mode="histneg_transport_normalized_oas"))
-        learn_task(model, 0)
-        learn_task(model, 1)
-        row = model.transport_history[-1]
-        self.assertEqual(row["transport_kind"], "histneg_transport_normalized_oas")
-        self.assertNotIn("coverage_mean", row)
-        self.assertNotIn("step_gate_mean", row)
-        self.assertTrue(torch.isfinite(model.net.raw_mean[:4]).all())
-
-    def test_histneg_is_zero_on_first_task_and_positive_afterward(self):
-        model = build(args(atlasv3_acl_mode="histneg"))
-        first = TaskData(0, task_values(0))
-        model.begin_task(first)
-        batch = next(iter(first.train_loader))
-        features, coords, patch_size = model.prepare_inputs(batch.features, batch.coords, batch.patch_size_level0, training=True)
-        metrics = model.observe(features, coords, patch_size, batch.labels, task=0)
-        self.assertEqual(metrics["loss_histneg"], 0.0)
-        model.end_task(first)
-        second = TaskData(1, task_values(1))
-        model.begin_task(second)
-        batch = next(iter(second.train_loader))
-        features, coords, patch_size = model.prepare_inputs(batch.features, batch.coords, batch.patch_size_level0, training=True)
-        metrics = model.observe(features, coords, patch_size, batch.labels, task=1)
-        self.assertGreater(metrics["loss_histneg"], 0.0)
 
     def test_in_process_best_checkpoint_restore_preserves_pair_cache(self):
         model = build(args())
@@ -405,7 +306,7 @@ class AtlasV3ACLTests(unittest.TestCase):
         model.end_task(dataset)
 
     def test_checkpoint_round_trip_after_task_boundary(self):
-        options = args(atlasv3_acl_mode="gated")
+        options = args(atlasv3_acl_mode="gated_transport_normalized_oas_no_histneg")
         model = build(options)
         learn_task(model, 0)
         state = copy.deepcopy(model.state_dict())

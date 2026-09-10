@@ -48,85 +48,30 @@ def _setting(
 
 SETTINGS = (
     _setting(
-        "static_control",
-        "strength",
-        atlasv3_acl_mode="normalized_oas_static",
-        atlasv3_acl_transport_mean_scale=0.0,
-        atlasv3_acl_transport_cov_scale=0.0,
-    ),
-    _setting(
-        "gated_m010_c000_r8_l1em3",
-        "strength",
-        atlasv3_acl_transport_mean_scale=0.10,
-        atlasv3_acl_transport_cov_scale=0.0,
-    ),
-    _setting(
-        "gated_m025_c000_r8_l1em3",
-        "strength",
-        atlasv3_acl_transport_mean_scale=0.25,
-        atlasv3_acl_transport_cov_scale=0.0,
-    ),
-    _setting(
         "gated_m050_c000_r8_l1em3",
         "strength",
         atlasv3_acl_transport_mean_scale=0.50,
         atlasv3_acl_transport_cov_scale=0.0,
     ),
     _setting(
-        "gated_m025_c010_r8_l1em3",
-        "strength",
-        atlasv3_acl_transport_mean_scale=0.25,
-        atlasv3_acl_transport_cov_scale=0.10,
+        "map_gated_m050_c000_r1_l1em3",
+        "map",
+        atlasv3_acl_transport_rank=1,
+        atlasv3_acl_transport_mean_scale=0.50,
+        atlasv3_acl_transport_cov_scale=0.0,
     ),
     _setting(
-        "gated_m050_c010_r8_l1em3",
-        "strength",
+        "map_gated_m050_c000_r4_l1em3",
+        "map",
+        atlasv3_acl_transport_rank=4,
         atlasv3_acl_transport_mean_scale=0.50,
-        atlasv3_acl_transport_cov_scale=0.10,
-    ),
-    _setting("gated_m100_c100_r8_l1em3", "strength"),
-    *(
-        _setting(
-            f"map_gated_m050_c000_r{rank}_{ridge_id}",
-            "map",
-            atlasv3_acl_transport_rank=rank,
-            atlasv3_acl_transport_ridge=ridge,
-            atlasv3_acl_transport_mean_scale=0.50,
-            atlasv3_acl_transport_cov_scale=0.0,
-        )
-        for rank in (1, 2, 4, 8)
-        for ridge_id, ridge in (("l1em3", 1.0e-3), ("l1em2", 1.0e-2), ("l1em1", 1.0e-1))
-    ),
-    *(
-        _setting(
-            f"gate_gated_r4_l1em2_e{energy_id}_b10",
-            "gate",
-            atlasv3_acl_transport_rank=4,
-            atlasv3_acl_transport_ridge=1.0e-2,
-            atlasv3_acl_transport_mean_scale=0.50,
-            atlasv3_acl_transport_cov_scale=0.0,
-            atlasv3_acl_coverage_energy=energy,
-        )
-        for energy_id, energy in (("080", 0.80), ("090", 0.90), ("095", 0.95), ("099", 0.99))
-    ),
-    *(
-        _setting(
-            f"gate_gated_r4_l1em2_e095_b{beta}",
-            "gate",
-            atlasv3_acl_transport_rank=4,
-            atlasv3_acl_transport_ridge=1.0e-2,
-            atlasv3_acl_transport_mean_scale=0.50,
-            atlasv3_acl_transport_cov_scale=0.0,
-            atlasv3_acl_uncertainty_beta=float(beta),
-        )
-        for beta in (0, 50, 100)
+        atlasv3_acl_transport_cov_scale=0.0,
     ),
 )
 
-
 def select_settings(groups: Sequence[str]) -> list[dict[str, Any]]:
     requested = set(groups)
-    unknown = requested.difference({"strength", "map", "gate", "all"})
+    unknown = requested.difference({"strength", "map", "all"})
     if unknown:
         raise ValueError("Unknown sweep groups: " + ", ".join(sorted(unknown)))
     if "all" in requested:

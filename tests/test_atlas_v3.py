@@ -11,7 +11,6 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from models.atlas_v3 import (
-    DISTRIBUTION_MODES,
     build_model_from_components,
     get_parser,
     validate_args,
@@ -68,17 +67,6 @@ def args(**overrides):
         seed=5,
         fold=1,
         atlasv3_distribution_mode="prototype",
-        atlasv3_distribution_alpha=0.1,
-        atlasv3_distribution_rho=0.5,
-        atlasv3_distribution_rank=8,
-        atlasv3_distribution_clusters=2,
-        atlasv3_distribution_tau_multi=0.1,
-        atlasv3_distribution_beta=0.25,
-        atlasv3_distribution_tau_task=0.1,
-        atlasv3_pt_steps=2,
-        atlasv3_pt_lr=0.05,
-        atlasv3_pt_samples_per_class=4,
-        atlasv3_pt_margin=0.2,
         ablation_id=None,
         ablation_group=None,
         ablation_config_hash=None,
@@ -131,10 +119,10 @@ def build(options):
 
 
 class AtlasV3RegistryTests(unittest.TestCase):
-    def test_registry_has_exactly_the_eleven_frozen_modes(self):
+    def test_registry_has_exactly_the_two_paper_baselines(self):
         registry = load_registry(REGISTRY)
         self.assertEqual(tuple(registry["variants"]), SETTING_IDS)
-        self.assertEqual(len(SETTING_IDS), 11)
+        self.assertEqual(len(SETTING_IDS), 2)
         for variant_id, variant in registry["variants"].items():
             self.assertEqual(
                 variant["overrides"],
@@ -163,9 +151,7 @@ class AtlasV3Tests(unittest.TestCase):
             for item in parser._actions
             if item.dest == "atlasv3_distribution_mode"
         )
-        self.assertEqual(
-            tuple(action.choices), ("prototype", "oas_lda", *DISTRIBUTION_MODES)
-        )
+        self.assertEqual(tuple(action.choices), ("prototype", "oas_lda"))
 
     def test_validation_rejects_invalid_backbone_and_distribution_values(self):
         baseline = args(feature_dim=768)
@@ -174,9 +160,7 @@ class AtlasV3Tests(unittest.TestCase):
             {"backbone": "titan"},
             {"feature_dim": 512},
             {"backbone_max_patches": 1},
-            {"atlasv3_distribution_rank": 3},
-            {"atlasv3_distribution_clusters": 4},
-            {"atlasv3_distribution_rho": 1.1},
+            {"atlasv3_distribution_mode": "diag"},
         ):
             with self.subTest(override=override), self.assertRaises(ValueError):
                 validate_args(args(**{"feature_dim": 768, **override}))
@@ -209,8 +193,8 @@ class AtlasV3Tests(unittest.TestCase):
         self.assertEqual(lda.net.lda_counts[:2].tolist(), [2, 2])
         self.assertTrue(bool(lda.net.lda_fitted))
 
-    def test_distribution_state_and_checkpoint_round_trip(self):
-        options = args(atlasv3_distribution_mode="diag")
+    def test_oas_state_and_checkpoint_round_trip(self):
+        options = args(atlasv3_distribution_mode="oas_lda")
         model = build(options)
         task = TaskData(
             0,
@@ -223,15 +207,15 @@ class AtlasV3Tests(unittest.TestCase):
         )
         model.begin_task(task)
         model.end_task(task)
-        self.assertEqual(model.net.distribution_head.class_count[:2].tolist(), [2, 2])
-        self.assertEqual(model.calibration_history[0]["split"], "validation")
+        self.assertEqual(model.net.lda_counts[:2].tolist(), [2, 2])
+        self.assertTrue(bool(model.net.lda_fitted))
 
         state = copy.deepcopy(model.state_dict())
         method_state = copy.deepcopy(model.get_checkpoint_state())
         restored = build(options)
         restored.load_state_dict(state, strict=True)
         restored.load_checkpoint_state(method_state, strict=True)
-        self.assertEqual(restored.calibration_history, model.calibration_history)
+        self.assertTrue(torch.equal(restored.net.lda_means, model.net.lda_means))
 
 
 if __name__ == "__main__":

@@ -14,21 +14,20 @@ class MethodConfigTests(unittest.TestCase):
     def test_all_method_configs_parse(self):
         config_path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         expected = {
-            "atlas_mil", "atlas_v2", "atlas_v3", "atlas_v3_acl", "amil", "agem", "derpp", "er_ace", "ewc_on",
+            "atlas_v3", "atlas_v3_acl", "amil", "agem", "derpp", "er_ace", "ewc_on",
             "gdumb", "joint", "lwsr", "lwf", "micil", "owlora",
             "qpmil_vl", "sgd",
         }
         raw = yaml.safe_load(config_path.read_text())
         self.assertEqual(set(raw["methods"]), expected)
         baseline_methods = expected - {
-            "atlas_mil", "atlas_v2", "atlas_v3", "atlas_v3_acl", "amil", "lwsr", "micil", "owlora", "qpmil_vl"
+            "atlas_v3", "atlas_v3_acl", "amil", "lwsr", "micil", "owlora", "qpmil_vl"
         }
         supported = [
             *((method, backbone) for method in baseline_methods
               for backbone in ("generic_mil", "titan", "feather", "gigapath")),
-            *((method, backbone) for method in ("atlas_mil", "amil")
+            *((method, backbone) for method in ("amil",)
               for backbone in ("generic_mil", "feather")),
-            ("atlas_v2", "feather"),
             ("atlas_v3", "feather"),
             ("atlas_v3_acl", "feather"),
             *((method, backbone) for method in ("lwsr", "micil")
@@ -82,8 +81,6 @@ class MethodConfigTests(unittest.TestCase):
         path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         raw = yaml.safe_load(path.read_text())
         cases = {
-            "atlas_mil": "feather",
-            "atlas_v2": "feather",
             "atlas_v3": "feather",
             "atlas_v3_acl": "feather",
             "amil": "generic_mil",
@@ -108,10 +105,6 @@ class MethodConfigTests(unittest.TestCase):
     def test_new_methods_reject_unsupported_backbones_and_freezing(self):
         path = Path(__file__).parents[1] / "configs" / "methods.yaml"
         invalid = [
-            ("atlas_v2", "titan", []),
-            ("atlas_v2", "generic_mil", []),
-            ("atlas_v2", "feather", ["--backbone_max_patches", "1"]),
-            ("atlas_v2", "feather", ["--atlasv2_replay", "--buffer_size", "29"]),
             ("atlas_v3", "titan", []),
             ("atlas_v3", "generic_mil", []),
             ("atlas_v3", "feather", ["--backbone_max_patches", "1"]),
@@ -119,14 +112,6 @@ class MethodConfigTests(unittest.TestCase):
             ("atlas_v3_acl", "generic_mil", []),
             ("atlas_v3_acl", "feather", ["--backbone_freeze"]),
             ("atlas_v3_acl", "feather", ["--backbone_max_patches", "1"]),
-            ("atlas_mil", "titan", []),
-            ("atlas_mil", "gigapath", []),
-            ("atlas_mil", "feather", ["--backbone_freeze"]),
-            ("atlas_mil", "feather", ["--backbone_max_patches", "1"]),
-            ("atlas_mil", "feather", ["--feature_dim", "512"]),
-            ("atlas_mil", "feather", ["--buffer_size", "20"]),
-            ("atlas_mil", "feather", ["--atlas_lora_rank", "0"]),
-            ("atlas_mil", "feather", ["--atlas_nce_weight", "-1"]),
             ("amil", "titan", []),
             ("amil", "gigapath", []),
             ("lwsr", "generic_mil", []),

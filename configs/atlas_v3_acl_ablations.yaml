@@ -2,194 +2,41 @@ defaults:
   config: configs/methods.yaml
   backbone: feather
   result_root: ablations/atlas_v3_acl
-  expected_variants: 21
+  expected_variants: 4
 
 variants:
   atlasv3_acl:
     id: atlasv3_acl
-    group: acl_transport_suite
+    group: paper_ablation
     model: atlas_v3_acl
-    label: ACL current-task anchors with static historical prototypes
-    factor: base_method
-    value: acl
-    overrides: {atlasv3_acl_mode: acl}
-
-  atlasv3_acl_histneg:
-    id: atlasv3_acl_histneg
-    group: acl_transport_suite
-    model: atlas_v3_acl
-    label: ACL with balanced hard historical negatives
-    factor: historical_negatives
-    value: enabled
-    overrides: {atlasv3_acl_mode: histneg}
-
-  atlasv3_acl_sdc:
-    id: atlasv3_acl_sdc
-    group: acl_transport_suite
-    model: atlas_v3_acl
-    label: ACL with semantic drift compensation control
-    factor: transport
-    value: sdc
-    overrides: {atlasv3_acl_mode: sdc}
-
-  atlasv3_acl_ldc:
-    id: atlasv3_acl_ldc
-    group: acl_transport_suite
-    model: atlas_v3_acl
-    label: ACL with learned full linear drift compensation
-    factor: transport
-    value: ldc
-    overrides: {atlasv3_acl_mode: ldc}
-
-  atlasv3_acl_sldc:
-    id: atlasv3_acl_sldc
-    group: acl_transport_suite
-    model: atlas_v3_acl
-    label: ACL with full ridge-to-identity transport
-    factor: transport
-    value: sldc
-    overrides: {atlasv3_acl_mode: sldc}
-
-  atlasv3_acl_lowrank_transport:
-    id: atlasv3_acl_lowrank_transport
-    group: acl_transport_suite
-    model: atlas_v3_acl
-    label: ACL with normalized rank-eight residual transport
-    factor: transport
-    value: lowrank
-    overrides: {atlasv3_acl_mode: lowrank}
-
-  atlasv3_acl_histneg_lowrank_transport:
-    id: atlasv3_acl_histneg_lowrank_transport
-    group: acl_transport_suite
-    model: atlas_v3_acl
-    label: ACL with historical negatives and ungated low-rank transport
-    factor: gating_control
-    value: ungated
-    overrides: {atlasv3_acl_mode: histneg_lowrank}
-
-  atlasv3_acl_gated_transport:
-    id: atlasv3_acl_gated_transport
-    group: acl_transport_suite
-    model: atlas_v3_acl
-    label: ACL with historical negatives and coverage-bootstrap gating
-    factor: gating_control
-    value: gated
-    overrides: {atlasv3_acl_mode: gated}
-
-  atlasv3_acl_gated_transport_oas:
-    id: atlasv3_acl_gated_transport_oas
-    group: acl_transport_suite
-    model: atlas_v3_acl
-    label: Gated ACL transport with raw OAS-LDA
+    label: ACL current-task adaptation with static NCM prototypes
     factor: classifier
-    value: raw_oas_lda
-    overrides: {atlasv3_acl_mode: gated_oas}
-
-  atlasv3_acl_gated_transport_task_margin:
-    id: atlasv3_acl_gated_transport_task_margin
-    group: acl_transport_suite
-    model: atlas_v3_acl
-    label: Gated ACL transport with hard task margin
-    factor: task_margin
-    value: enabled
-    overrides: {atlasv3_acl_mode: gated_task_margin}
-
-  atlasv3_control_frozen_raw_oas:
-    id: atlasv3_control_frozen_raw_oas
-    group: acl_transport_controls
-    model: atlas_v3_acl
-    label: Frozen FEATHER raw OAS-LDA control
-    factor: classifier_control
-    value: frozen_raw_oas
-    overrides: {atlasv3_acl_mode: frozen_raw_oas}
-
-  atlasv3_acl_oas_static:
-    id: atlasv3_acl_oas_static
-    group: oas_transport_diagnostic
-    model: atlas_v3_acl
-    label: ACL OAS-LDA with static historical statistics
-    factor: historical_statistics
-    value: static
-    overrides: {atlasv3_acl_mode: oas_static}
-
-  atlasv3_acl_oas_transport:
-    id: atlasv3_acl_oas_transport
-    group: oas_transport_diagnostic
-    model: atlas_v3_acl
-    label: ACL OAS-LDA with ungated raw low-rank transport
-    factor: historical_statistics
-    value: ungated_transport
-    overrides: {atlasv3_acl_mode: oas_transport}
-
-  atlasv3_acl_oas_oracle:
-    id: atlasv3_acl_oas_oracle
-    group: oas_transport_diagnostic
-    model: atlas_v3_acl
-    label: ACL OAS-LDA with oracle old-train statistic recomputation
-    factor: historical_statistics
-    value: oracle_recompute
-    overrides: {atlasv3_acl_mode: oas_oracle}
+    value: ncm
+    overrides: {atlasv3_acl_mode: acl}
 
   atlasv3_acl_normalized_oas_static:
     id: atlasv3_acl_normalized_oas_static
-    group: normalized_oas_diagnostic
+    group: paper_ablation
     model: atlas_v3_acl
-    label: ACL-only adaptation with static normalized OAS-LDA statistics
-    factor: normalized_historical_statistics
+    label: ACL adaptation with static normalized OAS-LDA statistics
+    factor: historical_statistics
     value: static
     overrides: {atlasv3_acl_mode: normalized_oas_static}
 
   atlasv3_acl_transport_normalized_oas:
     id: atlasv3_acl_transport_normalized_oas
-    group: normalized_oas_diagnostic
+    group: paper_ablation
     model: atlas_v3_acl
-    label: ACL-only adaptation with ungated normalized OAS-LDA transport
-    factor: normalized_transport_without_histneg
+    label: ACL adaptation with ungated normalized OAS-LDA transport
+    factor: historical_statistics
     value: ungated_transport
     overrides: {atlasv3_acl_mode: transport_normalized_oas}
 
   atlasv3_acl_gated_transport_normalized_oas_no_histneg:
     id: atlasv3_acl_gated_transport_normalized_oas_no_histneg
-    group: normalized_oas_diagnostic
+    group: paper_ablation
     model: atlas_v3_acl
-    label: ACL-only adaptation with gated normalized OAS-LDA transport
-    factor: normalized_transport_without_histneg
+    label: ACL adaptation with gated normalized OAS-LDA transport
+    factor: historical_statistics
     value: gated_transport
     overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg}
-
-  atlasv3_acl_histneg_normalized_oas_static:
-    id: atlasv3_acl_histneg_normalized_oas_static
-    group: normalized_oas_diagnostic
-    model: atlas_v3_acl
-    label: ACL historical negatives with static normalized OAS-LDA statistics
-    factor: normalized_historical_negatives
-    value: enabled
-    overrides: {atlasv3_acl_mode: histneg_normalized_oas_static}
-
-  atlasv3_acl_histneg_normalized_oas_static_w01:
-    id: atlasv3_acl_histneg_normalized_oas_static_w01
-    group: normalized_oas_diagnostic
-    model: atlas_v3_acl
-    label: ACL normalized static OAS-LDA with historical-negative weight 0.1
-    factor: normalized_historical_negative_weight
-    value: 0.1
-    overrides: {atlasv3_acl_mode: histneg_normalized_oas_static, atlasv3_acl_hist_weight: 0.1}
-
-  atlasv3_acl_histneg_transport_normalized_oas:
-    id: atlasv3_acl_histneg_transport_normalized_oas
-    group: normalized_oas_diagnostic
-    model: atlas_v3_acl
-    label: ACL historical negatives with ungated normalized OAS-LDA transport
-    factor: normalized_historical_transport
-    value: ungated_transport
-    overrides: {atlasv3_acl_mode: histneg_transport_normalized_oas}
-
-  atlasv3_acl_gated_transport_normalized_oas:
-    id: atlasv3_acl_gated_transport_normalized_oas
-    group: normalized_oas_diagnostic
-    model: atlas_v3_acl
-    label: ACL historical negatives with gated normalized OAS-LDA transport
-    factor: normalized_historical_statistics
-    value: gated_transport
-    overrides: {atlasv3_acl_mode: gated_normalized_oas}

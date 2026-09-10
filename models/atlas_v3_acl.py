@@ -17,10 +17,7 @@ from backbone.pretrained_mil import FEATHER_MODEL_ID, FEATHER_REVISION
 from models.utils.atlas_transport import (
     bootstrap_gates,
     distribution_coverage,
-    fit_ldc,
     fit_lowrank_residual,
-    fit_sldc,
-    mean_coverage,
     summarize,
 )
 from models.utils.continual_model import ContinualModel
@@ -31,68 +28,25 @@ from utils.optim import build_optimizer
 CHECKPOINT_VERSION = 1
 ACL_MODES = (
     "acl",
-    "histneg",
-    "sdc",
-    "ldc",
-    "sldc",
-    "lowrank",
-    "histneg_lowrank",
-    "gated",
-    "gated_oas",
-    "gated_task_margin",
-    "frozen_raw_oas",
-    "oas_static",
-    "oas_transport",
-    "oas_oracle",
     "normalized_oas_static",
     "transport_normalized_oas",
     "gated_transport_normalized_oas_no_histneg",
-    "histneg_normalized_oas_static",
-    "histneg_transport_normalized_oas",
-    "gated_normalized_oas",
 )
 TRANSPORT_MODES = {
-    "sdc", "ldc", "sldc", "lowrank", "histneg_lowrank",
-    "gated", "gated_oas", "gated_task_margin", "oas_transport",
     "transport_normalized_oas", "gated_transport_normalized_oas_no_histneg",
-    "histneg_transport_normalized_oas", "gated_normalized_oas",
-}
-HISTNEG_MODES = {
-    "histneg", "histneg_lowrank", "gated", "gated_oas",
-    "gated_task_margin", "oas_static", "oas_transport", "oas_oracle",
-    "histneg_normalized_oas_static", "histneg_transport_normalized_oas",
-    "gated_normalized_oas",
 }
 GATED_MODES = {
-    "gated", "gated_oas", "gated_task_margin",
-    "gated_transport_normalized_oas_no_histneg", "gated_normalized_oas",
+    "gated_transport_normalized_oas_no_histneg",
 }
 OAS_MODES = {
-    "gated_oas", "frozen_raw_oas", "oas_static", "oas_transport", "oas_oracle",
-    "normalized_oas_static", "histneg_normalized_oas_static",
+    "normalized_oas_static",
     "transport_normalized_oas", "gated_transport_normalized_oas_no_histneg",
-    "histneg_transport_normalized_oas", "gated_normalized_oas",
 }
-RAW_TRANSPORT_MODES = {"gated_oas", "oas_transport"}
-NORMALIZED_OAS_MODES = {
-    "normalized_oas_static", "histneg_normalized_oas_static",
-    "transport_normalized_oas", "gated_transport_normalized_oas_no_histneg",
-    "histneg_transport_normalized_oas", "gated_normalized_oas",
-}
-OAS_TRANSPORT_MODES = RAW_TRANSPORT_MODES | {
-    "transport_normalized_oas", "gated_transport_normalized_oas_no_histneg",
-    "histneg_transport_normalized_oas", "gated_normalized_oas",
-}
+NORMALIZED_OAS_MODES = OAS_MODES
 OAS_DIAGNOSTIC_SEMANTICS = {
-    "oas_static": "acl_histneg_raw_oas_static_no_transport_no_gate_v1",
-    "oas_transport": "acl_histneg_raw_oas_ungated_lowrank_transport_v1",
-    "oas_oracle": "acl_histneg_raw_oas_oracle_recompute_with_drift_probe_v1",
     "normalized_oas_static": "acl_only_normalized_oas_static_no_transport_v1",
     "transport_normalized_oas": "acl_only_normalized_oas_ungated_lowrank_transport_v1",
     "gated_transport_normalized_oas_no_histneg": "acl_only_normalized_oas_gated_lowrank_transport_v1",
-    "histneg_normalized_oas_static": "acl_histneg_normalized_oas_static_no_transport_v1",
-    "histneg_transport_normalized_oas": "acl_histneg_normalized_oas_ungated_lowrank_transport_v1",
-    "gated_normalized_oas": "acl_histneg_normalized_oas_gated_lowrank_transport_v1",
 }
 
 
@@ -108,10 +62,6 @@ def get_parser() -> ArgumentParser:
     )
     parser.add_argument("--atlasv3_acl_mode", choices=ACL_MODES, default="acl")
     parser.add_argument("--atlasv3_acl_temperature", type=float, default=0.1)
-    parser.add_argument("--atlasv3_acl_hist_weight", type=float, default=1.0)
-    parser.add_argument("--atlasv3_acl_hist_temperature", type=float, default=0.1)
-    parser.add_argument("--atlasv3_acl_hist_margin", type=float, default=0.2)
-    parser.add_argument("--atlasv3_acl_hist_topk", type=int, default=8)
     parser.add_argument("--atlasv3_acl_transport_rank", type=int, default=8)
     parser.add_argument("--atlasv3_acl_transport_ridge", type=float, default=1.0e-3)
     parser.add_argument(
@@ -126,16 +76,9 @@ def get_parser() -> ArgumentParser:
         default=1.0,
         help="Multiplier in [0,1] applied to the estimated historical-covariance transport step.",
     )
-    parser.add_argument("--atlasv3_acl_ldc_steps", type=int, default=100)
-    parser.add_argument("--atlasv3_acl_ldc_lr", type=float, default=1.0e-3)
-    parser.add_argument("--atlasv3_acl_sdc_sigma", type=float, default=0.3)
     parser.add_argument("--atlasv3_acl_coverage_energy", type=float, default=0.95)
     parser.add_argument("--atlasv3_acl_bootstrap_samples", type=int, default=20)
     parser.add_argument("--atlasv3_acl_uncertainty_beta", type=float, default=10.0)
-    parser.add_argument("--atlasv3_acl_reliability_floor", type=float, default=0.1)
-    parser.add_argument("--atlasv3_acl_reliability_momentum", type=float, default=0.5)
-    parser.add_argument("--atlasv3_acl_task_margin", type=float, default=0.2)
-    parser.add_argument("--atlasv3_acl_task_weight", type=float, default=0.1)
     return parser
 
 
@@ -152,16 +95,10 @@ def validate_args(args) -> None:
         raise ValueError("bags_per_update must be positive")
     if str(getattr(args, "atlasv3_acl_mode", "")) not in ACL_MODES:
         raise ValueError("Unknown ATLAS-v3 ACL mode")
-    positive = (
-        "atlasv3_acl_temperature", "atlasv3_acl_hist_temperature",
-        "atlasv3_acl_transport_ridge", "atlasv3_acl_ldc_lr",
-        "atlasv3_acl_sdc_sigma",
-    )
+    positive = ("atlasv3_acl_temperature", "atlasv3_acl_transport_ridge")
     for name in positive:
         if float(getattr(args, name, 0.0)) <= 0:
             raise ValueError(f"{name} must be positive")
-    if int(getattr(args, "atlasv3_acl_hist_topk", 0)) <= 0:
-        raise ValueError("atlasv3_acl_hist_topk must be positive")
     if int(getattr(args, "atlasv3_acl_transport_rank", 0)) <= 0:
         raise ValueError("atlasv3_acl_transport_rank must be positive")
     for name in (
@@ -171,34 +108,27 @@ def validate_args(args) -> None:
         value = float(getattr(args, name, -1.0))
         if not 0.0 <= value <= 1.0:
             raise ValueError(f"{name} must be in [0,1]")
-    if int(getattr(args, "atlasv3_acl_ldc_steps", 0)) <= 0:
-        raise ValueError("atlasv3_acl_ldc_steps must be positive")
     if int(getattr(args, "atlasv3_acl_bootstrap_samples", -1)) < 0:
         raise ValueError("atlasv3_acl_bootstrap_samples must be non-negative")
-    for name in ("atlasv3_acl_coverage_energy", "atlasv3_acl_reliability_floor", "atlasv3_acl_reliability_momentum"):
-        value = float(getattr(args, name, -1.0))
-        if not 0.0 < value <= 1.0:
-            raise ValueError(f"{name} must be in (0,1]")
-    for name in ("atlasv3_acl_hist_weight", "atlasv3_acl_hist_margin", "atlasv3_acl_uncertainty_beta", "atlasv3_acl_task_margin", "atlasv3_acl_task_weight"):
-        if float(getattr(args, name, -1.0)) < 0.0:
-            raise ValueError(f"{name} must be non-negative")
+    energy = float(getattr(args, "atlasv3_acl_coverage_energy", -1.0))
+    if not 0.0 < energy <= 1.0:
+        raise ValueError("atlasv3_acl_coverage_energy must be in (0,1]")
+    if float(getattr(args, "atlasv3_acl_uncertainty_beta", -1.0)) < 0.0:
+        raise ValueError("atlasv3_acl_uncertainty_beta must be non-negative")
 
 
 class AtlasV3ACLNetwork(nn.Module):
     supports_ssl = False
 
-    def __init__(self, backbone: nn.Module, num_classes: int, embedding_dim: int, class_task: List[int], mode: str) -> None:
+    def __init__(self, backbone: nn.Module, num_classes: int, embedding_dim: int, mode: str) -> None:
         super().__init__()
         self.backbone = backbone
         self.classifier = backbone.get_classifier()
         self.num_classes = int(num_classes)
         self.embedding_dim = int(embedding_dim)
         self.mode = str(mode)
-        self.register_buffer("class_task", torch.as_tensor(class_task, dtype=torch.long))
         self.register_buffer("prototype_bank", torch.zeros(num_classes, embedding_dim))
         self.register_buffer("prototype_valid", torch.zeros(num_classes, dtype=torch.bool))
-        self.register_buffer("hist_reliability", torch.ones(num_classes))
-        self.register_buffer("uncertainty_ema", torch.zeros(num_classes))
         self.register_buffer("last_coverage", torch.zeros(num_classes))
         self.register_buffer("last_step_gate", torch.zeros(num_classes))
         oas_classes = num_classes if str(mode) in OAS_MODES else 0
@@ -267,19 +197,15 @@ class AtlasV3ACL(ContinualModel):
             raise TypeError("ATLAS-v3 ACL requires a linear FEATHER classifier")
         for parameter in backbone.parameters():
             parameter.requires_grad_(False)
-        class_task: List[int] = []
-        for task, count in enumerate(args.task_num_classes):
-            class_task.extend([task] * int(count))
         network = AtlasV3ACLNetwork(
             backbone,
             int(args.num_classes),
             int(classifier.in_features),
-            class_task,
             str(args.atlasv3_acl_mode),
         )
         super().__init__(network, loss, args, transform)
         self.mode = str(args.atlasv3_acl_mode)
-        self.TRAINING_FREE = self.mode == "frozen_raw_oas"
+        self.TRAINING_FREE = False
         self.num_classes = int(args.num_classes)
         self.embedding_dim = int(classifier.in_features)
         if str(getattr(args, "backbone_model_id", "")) == FEATHER_MODEL_ID and str(getattr(args, "backbone_revision", "")) == FEATHER_REVISION and self.embedding_dim != 512:
@@ -361,86 +287,43 @@ class AtlasV3ACL(ContinualModel):
             raise RuntimeError("ATLAS-v3 ACL tasks must be learned sequentially")
         self.current_task = task
         self.old_class_count, self.seen_class_count = self._bounds(task)
-        if self.TRAINING_FREE:
-            self._set_encoder_trainable(False)
-            return
         raw, labels, indices = self._collect_loader(dataset.train_loader)
         self._pair_pre_raw, self._pair_labels, self._pair_indices = raw, labels, indices
         self._set_current_anchors(raw, labels)
         self._set_encoder_trainable(True)
         self._reset_optimizer()
 
-    def _acl_loss(self, embedding: torch.Tensor, label: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _acl_loss(self, embedding: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
         start, stop = self._bounds(self.current_task)
         z = F.normalize(embedding.float(), dim=1, eps=1.0e-8)
         anchors = F.normalize(self.net.prototype_bank[start:stop], dim=1, eps=1.0e-8)
         logits = z @ anchors.t() / float(self.args.atlasv3_acl_temperature)
         local = label.long().reshape(-1) - start
-        return F.cross_entropy(logits, local), z
-
-    def _historical_loss(self, z: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
-        if self.mode not in HISTNEG_MODES or self.old_class_count == 0:
-            return z.sum() * 0.0
-        positive = F.normalize(self.net.prototype_bank[label.long().reshape(-1)], dim=1, eps=1.0e-8)
-        positive_similarity = (z * positive).sum(1)
-        old = F.normalize(self.net.prototype_bank[:self.old_class_count], dim=1, eps=1.0e-8)
-        similarities = z @ old.t()
-        count = min(int(self.args.atlasv3_acl_hist_topk), self.old_class_count)
-        values, indices = similarities.topk(count, dim=1)
-        reliability = self.net.hist_reliability[:self.old_class_count][indices].clamp_min(float(self.args.atlasv3_acl_reliability_floor))
-        scaled = (values - positive_similarity[:, None] + float(self.args.atlasv3_acl_hist_margin)) / float(self.args.atlasv3_acl_hist_temperature)
-        log_mass = torch.logsumexp(scaled + reliability.log(), dim=1) - torch.log(scaled.new_tensor(float(count)))
-        return F.softplus(log_mass).mean()
-
-    def _task_margin_loss(self, z: torch.Tensor) -> torch.Tensor:
-        if self.mode != "gated_task_margin" or self.current_task == 0:
-            return z.sum() * 0.0
-        start, stop = self._bounds(self.current_task)
-        current = F.normalize(self.net.prototype_bank[start:stop], dim=1, eps=1.0e-8).mean(0)
-        current = F.normalize(current, dim=0, eps=1.0e-8)
-        old_centroids = []
-        for task in range(self.current_task):
-            left, right = self._bounds(task)
-            centroid = F.normalize(self.net.prototype_bank[left:right], dim=1, eps=1.0e-8).mean(0)
-            old_centroids.append(F.normalize(centroid, dim=0, eps=1.0e-8))
-        old = torch.stack(old_centroids)
-        hardest = (z @ old.t()).max(1).values
-        current_similarity = z @ current
-        return F.relu(float(self.args.atlasv3_acl_task_margin) + hardest - current_similarity).mean()
+        return F.cross_entropy(logits, local)
 
     def observe_many(self, batches, task=None, ssl=False) -> Dict[str, float]:
         if ssl:
             raise ValueError("ATLAS-v3 ACL has no SSL phase")
-        if self.TRAINING_FREE:
-            raise RuntimeError("Frozen raw-OAS control has no adaptation phase")
         if not batches:
             raise ValueError("ATLAS-v3 ACL observe_many requires current WSI bags")
         if task is not None and int(task) != self.current_task:
             raise RuntimeError("ATLAS-v3 ACL received a non-active task")
-        acl_values, hist_values, task_values = [], [], []
+        acl_values = []
         for features, coords, patch_size, labels in batches:
             label = labels.long().reshape(-1)
             if not self.old_class_count <= int(label.item()) < self.seen_class_count:
                 raise ValueError("Current label is outside the active task")
             embedding = self.net.encode(features, coords, patch_size)
-            acl, z = self._acl_loss(embedding, label)
-            acl_values.append(acl)
-            hist_values.append(self._historical_loss(z, label))
-            task_values.append(self._task_margin_loss(z))
+            acl_values.append(self._acl_loss(embedding, label))
         loss_acl = torch.stack(acl_values).mean()
-        loss_hist = torch.stack(hist_values).mean()
-        loss_task = torch.stack(task_values).mean()
-        total = loss_acl + float(self.args.atlasv3_acl_hist_weight) * loss_hist + float(self.args.atlasv3_acl_task_weight) * loss_task
-        if not torch.isfinite(total):
+        if not torch.isfinite(loss_acl):
             raise FloatingPointError("ATLAS-v3 ACL produced non-finite loss")
         self.opt.zero_grad(set_to_none=True)
-        self.backward_loss(total)
+        self.backward_loss(loss_acl)
         self.optimizer_step()
         return {
-            "loss": float(total.detach()),
+            "loss": float(loss_acl.detach()),
             "loss_acl": float(loss_acl.detach()),
-            "loss_histneg": float(loss_hist.detach()),
-            "loss_task_margin": float(loss_task.detach()),
             "replay_bags": 0.0,
             "buffer_size": 0.0,
         }
@@ -449,37 +332,12 @@ class AtlasV3ACL(ContinualModel):
         return self.observe_many([(features, coords, patch_size, labels)], task=task, ssl=ssl)
 
     @torch.no_grad()
-    def _sdc(self, old: torch.Tensor, source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        drift = target - source
-        sigma = float(self.args.atlasv3_acl_sdc_sigma)
-        distances = torch.cdist(old, source).square()
-        weights = torch.exp(-distances / (2.0 * sigma * sigma))
-        update = weights @ drift / weights.sum(1, keepdim=True).clamp_min(1.0e-8)
-        return F.normalize(old + update, dim=1, eps=1.0e-8)
-
-    @torch.no_grad()
-    def _update_reliability(self, gates: torch.Tensor, uncertainty: torch.Tensor) -> None:
-        old = slice(0, self.old_class_count)
-        momentum = float(self.args.atlasv3_acl_reliability_momentum)
-        floor = float(self.args.atlasv3_acl_reliability_floor)
-        reliability = (1.0 - momentum) * self.net.hist_reliability[old] + momentum * gates.to(self.net.hist_reliability)
-        self.net.hist_reliability[old].copy_(reliability.clamp(floor, 1.0))
-        finite = torch.isfinite(uncertainty)
-        if bool(finite.any()):
-            current = self.net.uncertainty_ema[old]
-            updated = current.clone()
-            updated[finite] = 0.9 * current[finite] + 0.1 * uncertainty.to(current)[finite]
-            self.net.uncertainty_ema[old].copy_(updated)
-
-    @torch.no_grad()
     def _transport_old(self, pre_raw: torch.Tensor, post_raw: torch.Tensor) -> Dict[str, Any]:
         row: Dict[str, Any] = {"task": self.current_task, "transport_kind": self.mode, "old_class_count": self.old_class_count}
         if self.old_class_count == 0:
             row.update({"effective_rank": 0.0, "transport_fallback_reason": "no_old_classes"})
             return row
-        if self.mode in {
-            "oas_static", "normalized_oas_static", "histneg_normalized_oas_static",
-        }:
+        if self.mode == "normalized_oas_static":
             row.update({"effective_rank": 0.0, "transport_fallback_reason": "static_old_statistics"})
             return row
         if self.mode not in TRANSPORT_MODES:
@@ -488,51 +346,19 @@ class AtlasV3ACL(ContinualModel):
         device = self.device
         source_norm = F.normalize(pre_raw.to(device), dim=1, eps=1.0e-8)
         target_norm = F.normalize(post_raw.to(device), dim=1, eps=1.0e-8)
-        old = self.net.prototype_bank[:self.old_class_count].detach().float().to(device)
         ridge = float(self.args.atlasv3_acl_transport_ridge)
         rank = int(self.args.atlasv3_acl_transport_rank)
-        if self.mode == "sdc":
-            updated = self._sdc(old, source_norm, target_norm)
-            self.net.prototype_bank[:self.old_class_count].copy_(updated.to(self.net.prototype_bank))
-            row.update({"effective_rank": 0.0, "pair_train_mse": "", "transport_fallback_reason": "local_class_weighted_drift"})
-            return row
-        if self.mode == "ldc":
-            matrix, diagnostics = fit_ldc(source_norm, target_norm, steps=int(self.args.atlasv3_acl_ldc_steps), learning_rate=float(self.args.atlasv3_acl_ldc_lr))
-            updated = F.normalize(old @ matrix, dim=1, eps=1.0e-8)
-            self.net.prototype_bank[:self.old_class_count].copy_(updated.to(self.net.prototype_bank))
-            row.update(diagnostics)
-            row.update({"effective_rank": float(self.embedding_dim), "transport_fallback_reason": ""})
-            return row
-        if self.mode == "sldc":
-            matrix, diagnostics = fit_sldc(source_norm, target_norm, ridge=ridge)
-            updated = F.normalize(old @ matrix, dim=1, eps=1.0e-8)
-            self.net.prototype_bank[:self.old_class_count].copy_(updated.to(self.net.prototype_bank))
-            row.update(diagnostics)
-            row.update({"effective_rank": float(self.embedding_dim), "transport_fallback_reason": ""})
-            return row
-
-        oas_transport = self.mode in OAS_TRANSPORT_MODES
-        raw_transport = self.mode in RAW_TRANSPORT_MODES
-        source = pre_raw.to(device) if raw_transport else source_norm
-        target = post_raw.to(device) if raw_transport else target_norm
-        points = (
-            self.net.raw_mean[:self.old_class_count].detach().float().to(device)
-            if oas_transport
-            else old
-        )
+        source, target = source_norm, target_norm
+        points = self.net.raw_mean[:self.old_class_count].detach().float().to(device)
         main = fit_lowrank_residual(source, target, rank=rank, ridge=ridge)
         row.update(main.diagnostics)
         if self.mode in GATED_MODES:
-            coverage = (
-                distribution_coverage(
-                    points,
-                    self.net.raw_scatter[:self.old_class_count].to(device),
-                    self.net.raw_count[:self.old_class_count].to(device),
-                    source,
-                    energy=float(self.args.atlasv3_acl_coverage_energy),
-                )
-                if oas_transport
-                else mean_coverage(points, source, energy=float(self.args.atlasv3_acl_coverage_energy))
+            coverage = distribution_coverage(
+                points,
+                self.net.raw_scatter[:self.old_class_count].to(device),
+                self.net.raw_count[:self.old_class_count].to(device),
+                source,
+                energy=float(self.args.atlasv3_acl_coverage_energy),
             )
             gates, uncertainty, bootstrap = bootstrap_gates(
                 points, source, target, coverage, main,
@@ -548,35 +374,28 @@ class AtlasV3ACL(ContinualModel):
             self.net.last_coverage[:self.old_class_count].copy_(coverage.to(self.net.last_coverage))
         else:
             gates = torch.ones(self.old_class_count, device=device)
-            uncertainty = torch.full_like(gates, float("nan"))
         mean_gates = gates * float(self.args.atlasv3_acl_transport_mean_scale)
         covariance_gates = gates * float(self.args.atlasv3_acl_transport_cov_scale)
         row.update(summarize(mean_gates, "applied_mean_gate"))
-        if oas_transport:
-            row.update(summarize(covariance_gates, "applied_covariance_gate"))
+        row.update(summarize(covariance_gates, "applied_covariance_gate"))
         self.net.last_step_gate[:self.old_class_count].copy_(
             mean_gates.to(self.net.last_step_gate)
         )
-        self._update_reliability(mean_gates, uncertainty)
         mapped = main.map(points, mean_gates)
         if not torch.isfinite(mapped).all():
             raise FloatingPointError("ATLAS-v3 ACL transport produced non-finite means")
-        if oas_transport:
-            self.net.raw_mean[:self.old_class_count].copy_(mapped.to(self.net.raw_mean))
-            identity = torch.eye(self.embedding_dim, device=device)
-            for label in range(self.old_class_count):
-                transform = identity + covariance_gates[label] * main.delta
-                scatter = self.net.raw_scatter[label].to(device)
-                transported = transform.t() @ scatter @ transform
-                transported = 0.5 * (transported + transported.t())
-                if not torch.isfinite(transported).all():
-                    raise FloatingPointError("ATLAS-v3 ACL transport produced non-finite scatter")
-                self.net.raw_scatter[label].copy_(transported.to(self.net.raw_scatter))
-            normalized = F.normalize(mapped, dim=1, eps=1.0e-8)
-        else:
-            normalized = F.normalize(mapped, dim=1, eps=1.0e-8)
+        self.net.raw_mean[:self.old_class_count].copy_(mapped.to(self.net.raw_mean))
+        identity = torch.eye(self.embedding_dim, device=device)
+        for label in range(self.old_class_count):
+            transform = identity + covariance_gates[label] * main.delta
+            scatter = self.net.raw_scatter[label].to(device)
+            transported = transform.t() @ scatter @ transform
+            transported = 0.5 * (transported + transported.t())
+            if not torch.isfinite(transported).all():
+                raise FloatingPointError("ATLAS-v3 ACL transport produced non-finite scatter")
+            self.net.raw_scatter[label].copy_(transported.to(self.net.raw_scatter))
+        normalized = F.normalize(mapped, dim=1, eps=1.0e-8)
         self.net.prototype_bank[:self.old_class_count].copy_(normalized.to(self.net.prototype_bank))
-        row.update(summarize(self.net.hist_reliability[:self.old_class_count], "hist_reliability"))
         row["transport_fallback_reason"] = "" if main.effective_rank > 0 else "zero_effective_rank"
         return row
 
@@ -600,8 +419,6 @@ class AtlasV3ACL(ContinualModel):
             )
             self.net.prototype_bank[label].copy_(prototype.to(self.net.prototype_bank))
             self.net.prototype_valid[label] = True
-            self.net.hist_reliability[label] = 1.0
-            self.net.uncertainty_ema[label] = 0.0
             self.net.last_coverage[label] = 1.0
             self.net.last_step_gate[label] = 1.0
             if self.mode in OAS_MODES:
@@ -610,219 +427,6 @@ class AtlasV3ACL(ContinualModel):
                 self.net.raw_count[label] = int(statistics.shape[0])
                 self.net.raw_mean[label].copy_(mean)
                 self.net.raw_scatter[label].copy_(centered.t() @ centered)
-
-    @torch.no_grad()
-    def _fit_oracle_statistics(
-        self,
-        dataset,
-        current_raw: torch.Tensor,
-        current_labels: torch.Tensor,
-    ) -> int:
-        """Recompute all seen statistics with old train data (diagnostic only)."""
-
-        if not hasattr(dataset, "_datasets_for_task"):
-            raise RuntimeError(
-                "OAS oracle requires seq-wsi task datasets to revisit old train splits"
-            )
-        raw_parts = []
-        label_parts = []
-        revisited = 0
-        collate_fn = dataset.train_loader.collate_fn
-        fold = int(getattr(self.args, "fold", 0))
-        for task_id in range(self.current_task):
-            train_set = dataset._datasets_for_task(task_id, fold)[0]
-            source = DataLoader(
-                train_set,
-                batch_size=1,
-                shuffle=False,
-                num_workers=0,
-                collate_fn=collate_fn,
-            )
-            raw, labels, _ = self._collect_loader(source)
-            raw_parts.append(raw)
-            label_parts.append(labels)
-            revisited += int(raw.shape[0])
-        raw_parts.append(current_raw)
-        label_parts.append(current_labels)
-        all_raw = torch.cat(raw_parts).float()
-        all_labels = torch.cat(label_parts).long()
-        for label in range(self.seen_class_count):
-            values = all_raw[all_labels == label].to(self.net.raw_mean)
-            if values.shape[0] == 0:
-                raise RuntimeError(f"OAS oracle has no train samples for class {label}")
-            mean = values.mean(0)
-            centered = values - mean
-            self.net.prototype_bank[label].copy_(
-                F.normalize(mean, dim=0, eps=1.0e-8).to(self.net.prototype_bank)
-            )
-            self.net.prototype_valid[label] = True
-            self.net.raw_count[label] = int(values.shape[0])
-            self.net.raw_mean[label].copy_(mean)
-            self.net.raw_scatter[label].copy_(centered.t() @ centered)
-            self.net.hist_reliability[label] = 1.0
-            self.net.uncertainty_ema[label] = 0.0
-            self.net.last_coverage[label] = 1.0
-            self.net.last_step_gate[label] = 1.0
-        return revisited
-
-    @torch.no_grad()
-    def _oracle_drift_diagnostics(
-        self,
-        pre_raw: torch.Tensor,
-        post_raw: torch.Tensor,
-        old_mean: torch.Tensor,
-        old_scatter: torch.Tensor,
-        old_count: torch.Tensor,
-    ) -> Dict[str, Any]:
-        """Compare no correction, ungated transport, and gated transport to oracle statistics."""
-
-        if self.old_class_count == 0:
-            return {
-                "oracle_class_diagnostics": [],
-                "oracle_probe_status": "no_old_classes",
-            }
-        device = self.device
-        source = pre_raw.detach().float().to(device)
-        target = post_raw.detach().float().to(device)
-        means_before = old_mean.detach().float().to(device)
-        scatters_before = old_scatter.detach().float().to(device)
-        counts_before = old_count.detach().long().to(device)
-        rank = int(self.args.atlasv3_acl_transport_rank)
-        ridge = float(self.args.atlasv3_acl_transport_ridge)
-        fitted = fit_lowrank_residual(source, target, rank=rank, ridge=ridge)
-        coverage = distribution_coverage(
-            means_before,
-            scatters_before,
-            counts_before,
-            source,
-            energy=float(self.args.atlasv3_acl_coverage_energy),
-        )
-        gates, uncertainty, bootstrap = bootstrap_gates(
-            means_before,
-            source,
-            target,
-            coverage,
-            fitted,
-            rank=rank,
-            ridge=ridge,
-            samples=int(self.args.atlasv3_acl_bootstrap_samples),
-            beta=float(self.args.atlasv3_acl_uncertainty_beta),
-            seed=int(getattr(self.args, "seed", 0) or 0)
-            + 1009 * int(getattr(self.args, "fold", 0) or 0)
-            + 104729 * self.current_task,
-        )
-        ones = torch.ones_like(gates)
-        ungated_mean = fitted.map(means_before, ones)
-        gated_mean = fitted.map(means_before, gates)
-        identity = torch.eye(self.embedding_dim, device=device)
-
-        def transport_scatters(step_gates: torch.Tensor) -> torch.Tensor:
-            outputs = []
-            for label in range(self.old_class_count):
-                transform = identity + step_gates[label] * fitted.delta
-                value = transform.t() @ scatters_before[label] @ transform
-                outputs.append(0.5 * (value + value.t()))
-            return torch.stack(outputs)
-
-        ungated_scatter = transport_scatters(ones)
-        gated_scatter = transport_scatters(gates)
-        oracle_mean = self.net.raw_mean[:self.old_class_count].detach().float().to(device)
-        oracle_scatter = self.net.raw_scatter[:self.old_class_count].detach().float().to(device)
-        oracle_count = self.net.raw_count[:self.old_class_count].detach().long().to(device)
-        class_rows: List[Dict[str, Any]] = []
-        metric_names = (
-            "mean_drift_cosine",
-            "mean_residual_ungated_cosine",
-            "mean_residual_gated_cosine",
-            "mean_error_ungated_l2",
-            "mean_error_gated_l2",
-            "mean_error_ungated_relative_l2",
-            "mean_error_gated_relative_l2",
-            "covariance_drift_frobenius",
-            "covariance_residual_ungated_frobenius",
-            "covariance_residual_gated_frobenius",
-            "covariance_drift_relative_frobenius",
-            "covariance_residual_ungated_relative_frobenius",
-            "covariance_residual_gated_relative_frobenius",
-            "mean_gain_ungated",
-            "mean_gain_gated",
-            "covariance_gain_ungated",
-            "covariance_gain_gated",
-        )
-        collected: Dict[str, List[float]] = {name: [] for name in metric_names}
-        for label in range(self.old_class_count):
-            degrees_before = max(int(counts_before[label]) - 1, 1)
-            degrees_oracle = max(int(oracle_count[label]) - 1, 1)
-            covariance_before = scatters_before[label] / float(degrees_before)
-            covariance_ungated = ungated_scatter[label] / float(degrees_before)
-            covariance_gated = gated_scatter[label] / float(degrees_before)
-            covariance_oracle = oracle_scatter[label] / float(degrees_oracle)
-            oracle_mean_norm = torch.linalg.vector_norm(oracle_mean[label]).clamp_min(1.0e-8)
-            oracle_covariance_norm = torch.linalg.matrix_norm(covariance_oracle).clamp_min(1.0e-8)
-
-            def cosine_distance(left: torch.Tensor, right: torch.Tensor) -> float:
-                left = F.normalize(left, dim=0, eps=1.0e-8)
-                right = F.normalize(right, dim=0, eps=1.0e-8)
-                return float(1.0 - (left * right).sum().clamp(-1.0, 1.0))
-
-            mean_drift = cosine_distance(means_before[label], oracle_mean[label])
-            mean_residual_ungated = cosine_distance(ungated_mean[label], oracle_mean[label])
-            mean_residual_gated = cosine_distance(gated_mean[label], oracle_mean[label])
-            mean_l2_ungated = float(torch.linalg.vector_norm(ungated_mean[label] - oracle_mean[label]))
-            mean_l2_gated = float(torch.linalg.vector_norm(gated_mean[label] - oracle_mean[label]))
-            covariance_drift = float(torch.linalg.matrix_norm(covariance_before - covariance_oracle))
-            covariance_residual_ungated = float(torch.linalg.matrix_norm(covariance_ungated - covariance_oracle))
-            covariance_residual_gated = float(torch.linalg.matrix_norm(covariance_gated - covariance_oracle))
-            values = {
-                "mean_drift_cosine": mean_drift,
-                "mean_residual_ungated_cosine": mean_residual_ungated,
-                "mean_residual_gated_cosine": mean_residual_gated,
-                "mean_error_ungated_l2": mean_l2_ungated,
-                "mean_error_gated_l2": mean_l2_gated,
-                "mean_error_ungated_relative_l2": mean_l2_ungated / float(oracle_mean_norm),
-                "mean_error_gated_relative_l2": mean_l2_gated / float(oracle_mean_norm),
-                "covariance_drift_frobenius": covariance_drift,
-                "covariance_residual_ungated_frobenius": covariance_residual_ungated,
-                "covariance_residual_gated_frobenius": covariance_residual_gated,
-                "covariance_drift_relative_frobenius": covariance_drift / float(oracle_covariance_norm),
-                "covariance_residual_ungated_relative_frobenius": covariance_residual_ungated / float(oracle_covariance_norm),
-                "covariance_residual_gated_relative_frobenius": covariance_residual_gated / float(oracle_covariance_norm),
-                "mean_gain_ungated": mean_drift - mean_residual_ungated,
-                "mean_gain_gated": mean_drift - mean_residual_gated,
-                "covariance_gain_ungated": (covariance_drift - covariance_residual_ungated) / float(oracle_covariance_norm),
-                "covariance_gain_gated": (covariance_drift - covariance_residual_gated) / float(oracle_covariance_norm),
-            }
-            for name, value in values.items():
-                collected[name].append(float(value))
-            origin_task = int(self.net.class_task[label])
-            class_rows.append({
-                "after_task": int(self.current_task),
-                "class_id": int(label),
-                "origin_task": origin_task,
-                "class_age": int(self.current_task - origin_task),
-                "sample_count": int(oracle_count[label]),
-                "coverage": float(coverage[label]),
-                "step_gate": float(gates[label]),
-                "bootstrap_uncertainty": (
-                    float(uncertainty[label])
-                    if bool(torch.isfinite(uncertainty[label]))
-                    else ""
-                ),
-                **values,
-            })
-        row: Dict[str, Any] = {
-            "oracle_class_diagnostics": class_rows,
-            "oracle_probe_status": "ok",
-            "oracle_probe_scope": "one_step_from_oracle_previous_statistics",
-            **{f"oracle_probe_{key}": value for key, value in fitted.diagnostics.items()},
-            **{f"oracle_probe_{key}": value for key, value in bootstrap.items()},
-        }
-        row.update({f"oracle_probe_{key}": value for key, value in summarize(coverage, "coverage").items()})
-        row.update({f"oracle_probe_{key}": value for key, value in summarize(gates, "step_gate").items()})
-        row.update({f"oracle_probe_{key}": value for key, value in summarize(uncertainty, "bootstrap_uncertainty").items()})
-        for name, values in collected.items():
-            row[f"oracle_{name}_mean"] = float(sum(values) / len(values))
-        return row
 
     @torch.no_grad()
     def _fit_oas(self) -> None:
@@ -865,44 +469,14 @@ class AtlasV3ACL(ContinualModel):
             raise RuntimeError("ATLAS-v3 ACL end_task requires current train data")
         self._set_encoder_trainable(False)
         post_raw, labels, indices = self._collect_loader(dataset.train_loader)
-        if self.TRAINING_FREE:
-            self._fit_current_statistics(post_raw, labels)
+        if self._pair_pre_raw is None or self._pair_labels is None or self._pair_indices is None:
+            raise RuntimeError("ATLAS-v3 ACL pre-adaptation pair cache is missing")
+        if not torch.equal(labels, self._pair_labels) or not torch.equal(indices, self._pair_indices):
+            raise RuntimeError("Pre/post transport pairs are misaligned")
+        row = self._transport_old(self._pair_pre_raw, post_raw)
+        self._fit_current_statistics(post_raw, labels)
+        if self.mode in OAS_MODES:
             self._fit_oas()
-            row = {"task": self.current_task, "transport_kind": "frozen_raw_oas", "transport_fallback_reason": "frozen_control", "effective_rank": 0.0}
-        elif self.mode == "oas_oracle":
-            if self._pair_pre_raw is None or self._pair_labels is None or self._pair_indices is None:
-                raise RuntimeError("OAS oracle pre-adaptation pair cache is missing")
-            if not torch.equal(labels, self._pair_labels) or not torch.equal(indices, self._pair_indices):
-                raise RuntimeError("Pre/post oracle pairs are misaligned")
-            old_mean = self.net.raw_mean[:self.old_class_count].clone()
-            old_scatter = self.net.raw_scatter[:self.old_class_count].clone()
-            old_count = self.net.raw_count[:self.old_class_count].clone()
-            revisited = self._fit_oracle_statistics(dataset, post_raw, labels)
-            self._fit_oas()
-            row = {
-                "task": self.current_task,
-                "transport_kind": "oas_oracle",
-                "transport_fallback_reason": "diagnostic_old_train_recompute",
-                "effective_rank": 0.0,
-                "oracle_revisited_wsis": int(revisited),
-                "diagnostic_only": True,
-            }
-            row.update(self._oracle_drift_diagnostics(
-                self._pair_pre_raw,
-                post_raw,
-                old_mean,
-                old_scatter,
-                old_count,
-            ))
-        else:
-            if self._pair_pre_raw is None or self._pair_labels is None or self._pair_indices is None:
-                raise RuntimeError("ATLAS-v3 ACL pre-adaptation pair cache is missing")
-            if not torch.equal(labels, self._pair_labels) or not torch.equal(indices, self._pair_indices):
-                raise RuntimeError("Pre/post transport pairs are misaligned")
-            row = self._transport_old(self._pair_pre_raw, post_raw)
-            self._fit_current_statistics(post_raw, labels)
-            if self.mode in OAS_MODES:
-                self._fit_oas()
         row.update({"retained_wsis": 0, "stored_statistics_bytes": self._statistics_bytes()})
         self.transport_history.append(row)
         self._pair_pre_raw = self._pair_labels = self._pair_indices = None
@@ -911,8 +485,7 @@ class AtlasV3ACL(ContinualModel):
 
     def _statistics_bytes(self) -> int:
         names = (
-            "prototype_bank", "prototype_valid", "hist_reliability",
-            "uncertainty_ema", "last_coverage", "last_step_gate",
+            "prototype_bank", "prototype_valid", "last_coverage", "last_step_gate",
         )
         if self.mode in OAS_MODES:
             names += ("raw_count", "raw_mean", "raw_scatter", "lda_weight", "lda_bias")
@@ -937,11 +510,6 @@ class AtlasV3ACL(ContinualModel):
             "ablation_id": getattr(self.args, "ablation_id", None),
             "ablation_config_hash": getattr(self.args, "ablation_config_hash", None),
         }
-        if self.mode == "oas_oracle":
-            config.update({
-                "diagnostic_only": True,
-                "revisits_old_train_data": True,
-            })
         if self.mode in OAS_DIAGNOSTIC_SEMANTICS:
             config["implementation_semantics"] = OAS_DIAGNOSTIC_SEMANTICS[self.mode]
         return config
@@ -960,7 +528,6 @@ class AtlasV3ACL(ContinualModel):
             "transport_accounting": {
                 "stored_slide_embeddings": 0,
                 "retained_wsis": 0,
-                "oracle_revisited_wsis": int(sum(int(row.get("oracle_revisited_wsis", 0)) for row in self.transport_history)),
                 "stored_statistics_bytes": self._statistics_bytes(),
                 "adaptation_parameter_count": int(adaptation_parameters),
                 "history": list(self.transport_history),

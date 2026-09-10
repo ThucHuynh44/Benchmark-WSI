@@ -1,4 +1,4 @@
-# ATLAS-MIL, AMIL, LWSR, MICIL, OWLoRA, and QPMIL-VL integration changes
+# AMIL, LWSR, MICIL, OWLoRA, and QPMIL-VL integration changes
 
 This file records the boundary between the byte-identical upstream snapshots
 under `third_party/upstream/` and the active ConSlide implementations under
@@ -54,22 +54,6 @@ features. LWSR, MICIL, and OWLoRA require a trainable TITAN or FEATHER backbone;
 QPMIL-VL uses only its pinned TITAN text tower and rejects FEATHER and generic
 MIL.
 
-## ATLAS-MIL active implementation
-
-ATLAS-MIL is a native research implementation rather than a vendored upstream
-snapshot. It uses FEATHER (or `generic_mil` for synthetic tests) for genuine
-patch attention and loads the separately pinned TITAN text tower only long
-enough to produce fixed 27-class semantic anchors. The active model freezes the
-base slide aggregator, trains fixed-size active LoRA factors, and compresses
-them into fixed-rank merged factors at every task boundary.
-
-Replay stores class-balanced MaxMinRand pseudo-bags with cached attention and
-slide embeddings. After best-checkpoint restoration, ATLAS first updates the
-reservoir, merges the task adapter, recomputes current-class atlas statistics
-with the compressed model, and finally refreshes every replay target. The
-hybrid prompt/centroid logits preserve the benchmark's global-classifier output
-contract and require no task ID at inference. CICS, CGRL, alternate selectors,
-and logit distillation are intentionally outside this implementation.
 
 ## OWLoRA active changes
 

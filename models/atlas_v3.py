@@ -1,6 +1,6 @@
-"""ATLAS-v3: frozen FEATHER prototype and distribution classifiers.
+"""ATLAS-v3: frozen FEATHER NCM and normalized OAS-LDA baselines.
 
-ATLAS-v3 is the training-free subset of ATLAS-v2.  The slide encoder is
+ATLAS-v3 is the training-free frozen-FEATHER suite. The slide encoder is
 always frozen and each task is learned from train-split slide embeddings at
 the task boundary.  The implementation intentionally contains no parameter-
 efficient adaptation or exemplar-memory path.
@@ -12,7 +12,6 @@ import hashlib
 import json
 from argparse import ArgumentParser, Namespace
 from collections import defaultdict
-from itertools import product
 from typing import Any, Dict, List, Mapping, Tuple
 
 import torch
@@ -22,48 +21,20 @@ from torch.utils.data import DataLoader
 
 from backbone.generic_mil import build_mil_backbone
 from backbone.pretrained_mil import FEATHER_MODEL_ID, FEATHER_REVISION
-from models.atlas_distribution import (
-    DISTRIBUTION_STATE_VERSION,
-    FrozenDistributionHead,
-)
 from models.utils.continual_model import ContinualModel
 from utils.args import add_experiment_args, add_management_args
 
 
 CHECKPOINT_VERSION = 1
-DISTRIBUTION_MODES = (
-    "diag",
-    "diag_shrink",
-    "lowrank",
-    "task_centroid",
-    "task_lme",
-    "multi",
-    "pt_only",
-    "atlas_tf",
-    "atlas_pt",
-)
-
-
 def get_parser() -> ArgumentParser:
     parser = ArgumentParser(description="ATLAS-v3 frozen prototype learning")
     add_management_args(parser)
     add_experiment_args(parser)
     parser.add_argument(
         "--atlasv3_distribution_mode",
-        choices=("prototype", "oas_lda", *DISTRIBUTION_MODES),
+        choices=("prototype", "oas_lda"),
         default="prototype",
     )
-    parser.add_argument("--atlasv3_distribution_alpha", type=float, default=0.1)
-    parser.add_argument("--atlasv3_distribution_rho", type=float, default=0.5)
-    parser.add_argument("--atlasv3_distribution_rank", type=int, default=8)
-    parser.add_argument("--atlasv3_distribution_clusters", type=int, default=3)
-    parser.add_argument("--atlasv3_distribution_tau_multi", type=float, default=0.1)
-    parser.add_argument("--atlasv3_distribution_beta", type=float, default=0.25)
-    parser.add_argument("--atlasv3_distribution_tau_task", type=float, default=0.1)
-    parser.add_argument("--atlasv3_pt_steps", type=int, default=200)
-    parser.add_argument("--atlasv3_pt_lr", type=float, default=0.05)
-    parser.add_argument("--atlasv3_pt_samples_per_class", type=int, default=32)
-    parser.add_argument("--atlasv3_pt_margin", type=float, default=0.2)
     return parser
 
 
@@ -78,28 +49,8 @@ def validate_args(args) -> None:
         raise ValueError("ATLAS-v3 requires backbone_max_patches=0 (full bags)")
 
     mode = str(getattr(args, "atlasv3_distribution_mode", "prototype"))
-    if mode not in {"prototype", "oas_lda", *DISTRIBUTION_MODES}:
+    if mode not in {"prototype", "oas_lda"}:
         raise ValueError(f"Unknown ATLAS-v3 distribution mode {mode!r}")
-    if int(getattr(args, "atlasv3_distribution_rank", 0)) not in (2, 4, 8):
-        raise ValueError("ATLAS-v3 distribution rank must be one of {2,4,8}")
-    if int(getattr(args, "atlasv3_distribution_clusters", 0)) not in (2, 3):
-        raise ValueError("ATLAS-v3 distribution clusters must be one of {2,3}")
-    if int(getattr(args, "atlasv3_pt_steps", 0)) <= 0:
-        raise ValueError("ATLAS-v3 PT steps must be positive")
-    for name in (
-        "atlasv3_distribution_alpha",
-        "atlasv3_distribution_tau_multi",
-        "atlasv3_distribution_tau_task",
-        "atlasv3_pt_lr",
-    ):
-        if float(getattr(args, name, 0.0)) <= 0.0:
-            raise ValueError(f"{name} must be positive")
-    if not 0.0 <= float(getattr(args, "atlasv3_distribution_rho", -1.0)) <= 1.0:
-        raise ValueError("atlasv3_distribution_rho must be in [0,1]")
-    if float(getattr(args, "atlasv3_distribution_beta", -1.0)) < 0.0:
-        raise ValueError("atlasv3_distribution_beta must be non-negative")
-    if int(getattr(args, "atlasv3_pt_samples_per_class", 0)) <= 0:
-        raise ValueError("atlasv3_pt_samples_per_class must be positive")
 
 
 class AtlasV3Network(nn.Module):
@@ -113,7 +64,6 @@ class AtlasV3Network(nn.Module):
         num_classes: int,
         embedding_dim: int,
         mode: str,
-        distribution_head: FrozenDistributionHead | None,
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -121,17 +71,13 @@ class AtlasV3Network(nn.Module):
         self.num_classes = int(num_classes)
         self.embedding_dim = int(embedding_dim)
         self.mode = str(mode)
-        self.distribution_head = distribution_head
-        self.distribution_enabled = distribution_head is not None
         self.prototype_lda_enabled = self.mode == "oas_lda"
-
-        if not self.distribution_enabled:
-            self.register_buffer(
-                "prototype_bank", torch.zeros(num_classes, embedding_dim)
-            )
-            self.register_buffer(
-                "prototype_valid", torch.zeros(num_classes, dtype=torch.bool)
-            )
+        self.register_buffer(
+            "prototype_bank", torch.zeros(num_classes, embedding_dim)
+        )
+        self.register_buffer(
+            "prototype_valid", torch.zeros(num_classes, dtype=torch.bool)
+        )
         if self.prototype_lda_enabled:
             self.register_buffer("lda_means", torch.zeros(num_classes, embedding_dim))
             self.register_buffer(
@@ -167,8 +113,6 @@ class AtlasV3Network(nn.Module):
         # FEATHER's frozen classifier because no prototype statistics exist yet.
         if not use_prototype:
             logits = self.classifier(embedding)
-        elif self.distribution_enabled:
-            logits = self.distribution_head.scores(embedding, seen_classes)
         elif self.prototype_lda_enabled:
             if not bool(self.lda_fitted):
                 raise RuntimeError("ATLAS-v3 train-only LDA has not been fitted")
@@ -201,17 +145,11 @@ class AtlasV3Network(nn.Module):
     ) -> Dict[str, torch.Tensor | None]:
         embedding = self.encode(features, coords, patch_size_level0)
         limit = self.num_classes if seen_classes is None else int(seen_classes)
-        task_scores = None
-        if self.distribution_enabled and bool(use_prototype):
-            logits, task_scores = self.distribution_head.scores_and_task_scores(
-                embedding, limit
-            )
-        else:
-            logits = self.inference_logits(embedding, limit, bool(use_prototype))
+        logits = self.inference_logits(embedding, limit, bool(use_prototype))
         return {
             "embedding": embedding,
             "logits": logits,
-            "soft_task_scores": task_scores,
+            "soft_task_scores": None,
         }
 
     def forward(self, features, coords=None, patch_size_level0=None, **kwargs):
@@ -333,36 +271,11 @@ class AtlasV3(ContinualModel):
         requested_mode = str(args.atlasv3_distribution_mode)
         self.mode = requested_mode
         self.prototype_lda_enabled = self.mode == "oas_lda"
-        self.distribution_enabled = self.mode in DISTRIBUTION_MODES
-
-        class_task = []
-        for task, count in enumerate(args.task_num_classes):
-            class_task.extend([task] * int(count))
-        distribution_head = (
-            FrozenDistributionHead(
-                int(args.num_classes),
-                int(classifier.in_features),
-                class_task,
-                self.mode,
-                seed=int(getattr(args, "seed", 0) or 0)
-                + 1009 * int(getattr(args, "fold", 0) or 0),
-                alpha=float(args.atlasv3_distribution_alpha),
-                rho=float(args.atlasv3_distribution_rho),
-                rank=int(args.atlasv3_distribution_rank),
-                clusters=int(args.atlasv3_distribution_clusters),
-                tau_multi=float(args.atlasv3_distribution_tau_multi),
-                beta=float(args.atlasv3_distribution_beta),
-                tau_task=float(args.atlasv3_distribution_tau_task),
-            )
-            if self.distribution_enabled
-            else None
-        )
         network = AtlasV3Network(
             backbone,
             int(args.num_classes),
             int(classifier.in_features),
             self.mode,
-            distribution_head,
         )
         super().__init__(network, loss, args, transform)
         self.num_classes = int(args.num_classes)
@@ -385,7 +298,6 @@ class AtlasV3(ContinualModel):
         self.completed_tasks = 0
         self.old_class_count = 0
         self.seen_class_count = self.task_num_classes[0]
-        self.calibration_history: List[Dict[str, Any]] = []
 
     def _validate_layout(self) -> None:
         if not (
@@ -441,168 +353,6 @@ class AtlasV3(ContinualModel):
     def _encode_loader(self, dataset) -> Dict[int, List[torch.Tensor]]:
         return self._encode_loader_object(dataset.train_loader)
 
-    @torch.no_grad()
-    def _validation_cache(self, dataset) -> tuple[torch.Tensor, torch.Tensor]:
-        loaders = getattr(dataset, "val_loaders", None)
-        if not isinstance(loaders, list) or len(loaders) <= self.current_task:
-            raise RuntimeError(
-                "ATLAS-v3 distribution calibration requires retained validation loaders"
-            )
-        values, labels = [], []
-        for loader in loaders[: self.current_task + 1]:
-            encoded = self._encode_loader_object(loader)
-            for label in sorted(encoded):
-                class_values = torch.cat(encoded[label])
-                values.append(class_values)
-                labels.append(
-                    torch.full((class_values.shape[0],), label, dtype=torch.long)
-                )
-        if not values:
-            raise RuntimeError("ATLAS-v3 distribution calibration cache is empty")
-        return torch.cat(values).to(self.device), torch.cat(labels).to(self.device)
-
-    def _calibrate_distribution(self, dataset, current) -> None:
-        head = self.net.distribution_head
-        validation_raw, labels = self._validation_cache(dataset)
-        validation_norm = F.normalize(validation_raw, dim=1, eps=1.0e-8)
-        stages = {
-            "diag": ("diag",),
-            "diag_shrink": ("diag_shrink",),
-            "lowrank": ("lowrank",),
-            "task_centroid": ("diag_shrink", "task_centroid"),
-            "task_lme": ("diag_shrink", "task_lme"),
-            "multi": ("multi",),
-            "pt_only": ("diag_shrink",),
-            "atlas_tf": ("lowrank", "multi", "atlas_tf"),
-            "atlas_pt": ("lowrank", "multi", "atlas_tf"),
-        }[self.mode]
-        selected = []
-        for stage in stages:
-            if stage == "multi" and self.current_task == 0:
-                current_values = {
-                    label: torch.cat(current[label]).to(self.device)
-                    for label in range(*self._bounds(self.current_task))
-                }
-                original_mode = head.mode
-                best_key, best = None, None
-                for index, (clusters, tau) in enumerate(
-                    product((2, 3), (0.05, 0.1, 0.2))
-                ):
-                    head.refit_subprototypes(current_values, clusters)
-                    head.selected_clusters.fill_(clusters)
-                    head.selected_tau_multi.fill_(tau)
-                    head.mode = "multi"
-                    predictions = head.scores(validation_norm).argmax(1)
-                    recalls = [
-                        (predictions[labels == label] == label).float().mean()
-                        for label in torch.unique(labels)
-                    ]
-                    metric = float(torch.stack(recalls).mean())
-                    key = (metric, -index)
-                    if best_key is None or key > best_key:
-                        best_key, best = key, (clusters, tau)
-                clusters, tau = best
-                head.refit_subprototypes(current_values, clusters)
-                head.selected_clusters.fill_(clusters)
-                head.selected_tau_multi.fill_(tau)
-                head.mode = original_mode
-                selected.append(
-                    {
-                        "stage": "multi",
-                        "clusters": clusters,
-                        "tau_multi": tau,
-                        "validation_bacc": best_key[0],
-                        "candidate_count": 6,
-                    }
-                )
-            elif stage == "multi":
-                selected.append(
-                    {
-                        "stage": "multi",
-                        "locked_from_task": 0,
-                        "clusters": int(head.selected_clusters),
-                        "tau_multi": float(head.selected_tau_multi),
-                        "candidate_count": 0,
-                    }
-                )
-            else:
-                selected.append(
-                    {"stage": stage, **head.select(validation_norm, labels, stage)}
-                )
-        self.calibration_history.append(
-            {
-                "distribution_state_version": DISTRIBUTION_STATE_VERSION,
-                "fold": int(getattr(self.args, "fold", 0) or 0),
-                "task": self.current_task,
-                "split": "validation",
-                "contains_test_cache": False,
-                "runtime_slide_embedding_dim": self.embedding_dim,
-                "stages": selected,
-            }
-        )
-
-    def _calibrate_prototype_tuning(self, dataset, current) -> None:
-        head = self.net.distribution_head
-        validation_raw, labels = self._validation_cache(dataset)
-        validation_norm = F.normalize(validation_raw, dim=1, eps=1.0e-8)
-        base_offset = head.class_offset.detach().clone()
-        best_key, best_offset, best_hp = None, None, None
-        candidates = [
-            (temperature, anchor, margin)
-            for temperature in (0.05, 0.1, 0.2)
-            for anchor in (0.01, 0.1, 1.0)
-            for margin in (0.0, 0.1)
-        ]
-        current_tensors = {
-            label: torch.cat(current[label]).to(self.device)
-            for label in range(*self._bounds(self.current_task))
-        }
-        for index, (temperature, anchor, margin_weight) in enumerate(candidates):
-            with torch.no_grad():
-                head.class_offset.copy_(base_offset)
-            head.tune_offsets(
-                current_tensors,
-                task=self.current_task,
-                steps=int(self.args.atlasv3_pt_steps),
-                learning_rate=float(self.args.atlasv3_pt_lr),
-                samples_per_class=int(self.args.atlasv3_pt_samples_per_class),
-                temperature=temperature,
-                anchor_weight=anchor,
-                margin_weight=margin_weight,
-                margin=float(self.args.atlasv3_pt_margin),
-            )
-            with torch.no_grad():
-                metric = float(
-                    sum(
-                        (
-                            head.scores(validation_norm).argmax(1)[labels == label]
-                            == label
-                        )
-                        .float()
-                        .mean()
-                        for label in torch.unique(labels)
-                    )
-                    / len(torch.unique(labels))
-                )
-            key = (metric, -index)
-            if best_key is None or key > best_key:
-                best_key = key
-                best_offset = head.class_offset.detach().clone()
-                best_hp = {
-                    "ce_temperature": temperature,
-                    "anchor_weight": anchor,
-                    "margin_weight": margin_weight,
-                }
-        with torch.no_grad():
-            head.class_offset.copy_(best_offset)
-        self.calibration_history[-1]["stages"].append(
-            {
-                "stage": "prototype_tuning",
-                **best_hp,
-                "validation_bacc": float(best_key[0]),
-                "candidate_count": len(candidates),
-            }
-        )
 
     def end_task(self, dataset=None) -> None:
         if dataset is None:
@@ -616,22 +366,10 @@ class AtlasV3(ContinualModel):
                 if not current[label]:
                     raise RuntimeError(f"Current train split has no class {label}")
                 embeddings = torch.cat(current[label])
-                if self.distribution_enabled:
-                    self.net.distribution_head.fit_class(
-                        label,
-                        F.normalize(
-                            embeddings.to(self.device), dim=1, eps=1.0e-8
-                        ),
-                    )
-                else:
-                    self.net.set_prototype(label, embeddings)
-                    if self.prototype_lda_enabled:
-                        self.net.update_lda_statistics(label, embeddings)
-            if self.distribution_enabled:
-                self._calibrate_distribution(dataset, current)
-                if self.mode in {"pt_only", "atlas_pt"}:
-                    self._calibrate_prototype_tuning(dataset, current)
-            elif self.prototype_lda_enabled:
+                self.net.set_prototype(label, embeddings)
+                if self.prototype_lda_enabled:
+                    self.net.update_lda_statistics(label, embeddings)
+            if self.prototype_lda_enabled:
                 self.net.fit_lda(stop)
         finally:
             self.net.train(was_training)
@@ -658,23 +396,6 @@ class AtlasV3(ContinualModel):
                 use_prototype=use_prototype,
             )
 
-    def forward_with_distribution_diagnostics(
-        self, x, coords=None, patch_size_level0=None
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        use_prototype = self.completed_tasks > self.current_task
-        if isinstance(x, (list, tuple)):
-            values = x
-            x, coords, patch_size_level0 = values[0], values[1], values[2]
-        with self.autocast_context():
-            output = self.net.forward_with_embedding(
-                x,
-                coords,
-                patch_size_level0,
-                seen_classes=self.seen_class_count,
-                use_prototype=use_prototype,
-            )
-        return output["logits"], output["soft_task_scores"]
-
     def _config(self) -> Dict[str, Any]:
         config = {
             "version": CHECKPOINT_VERSION,
@@ -692,24 +413,6 @@ class AtlasV3(ContinualModel):
                     "prototype_metric": "oas_shrinkage_lda",
                     "prototype_fit_data": "train_only",
                     "test_time_adaptation": False,
-                }
-            )
-        if self.distribution_enabled:
-            head = self.net.distribution_head
-            config.update(
-                {
-                    "distribution_state_version": DISTRIBUTION_STATE_VERSION,
-                    "distribution_fit_data": "train_only_normalized_slide_embeddings",
-                    "runtime_slide_embedding_dim": self.embedding_dim,
-                    "expected_pinned_feather_embedding_dim": 512,
-                    "test_time_adaptation": False,
-                    "alpha": float(head.selected_alpha),
-                    "rho": float(head.selected_rho),
-                    "rank": int(head.selected_rank),
-                    "clusters": int(head.selected_clusters),
-                    "tau_multi": float(head.selected_tau_multi),
-                    "beta": float(head.selected_beta),
-                    "tau_task": float(head.selected_tau_task),
                 }
             )
         return config
@@ -732,51 +435,6 @@ class AtlasV3(ContinualModel):
                 if self.prototype_lda_enabled
                 else None
             ),
-            "distribution_accounting": (
-                {
-                    **self.net.distribution_head.diagnostics(),
-                    "mode": self.mode,
-                    "stored_slide_embeddings": 0,
-                    "test_time_adaptation": False,
-                }
-                if self.distribution_enabled
-                else None
-            ),
-            "calibration_manifest": (
-                list(self.calibration_history) if self.distribution_enabled else None
-            ),
-        }
-
-    def get_calibration_manifest(self) -> Dict[str, Any] | None:
-        if not self.distribution_enabled:
-            return None
-        return {
-            "distribution_state_version": DISTRIBUTION_STATE_VERSION,
-            "ablation_id": getattr(self.args, "ablation_id", None),
-            "fold": int(getattr(self.args, "fold", 0) or 0),
-            "runtime_slide_embedding_dim": self.embedding_dim,
-            "expected_pinned_feather_embedding_dim": 512,
-            "backbone_model_id": getattr(self.args, "backbone_model_id", None),
-            "backbone_revision": getattr(self.args, "backbone_revision", None),
-            "selection_protocol": "fold-specific isolated validation; staged non-Cartesian DAG",
-            "contains_train_embeddings": False,
-            "contains_validation_embeddings": False,
-            "contains_test_embeddings": False,
-            "history": list(self.calibration_history),
-        }
-
-    def get_task_diagnostics(self) -> Dict[str, Any] | None:
-        if not self.distribution_enabled:
-            return None
-        return {
-            "task": self.current_task,
-            **self.net.distribution_head.diagnostics(),
-            "selected_hyperparameters": json.dumps(
-                self.calibration_history[-1]["stages"]
-                if self.calibration_history
-                else [],
-                sort_keys=True,
-            ),
         }
 
     def get_checkpoint_state(self) -> Dict[str, Any]:
@@ -792,8 +450,6 @@ class AtlasV3(ContinualModel):
             "old_class_count": self.old_class_count,
             "seen_class_count": self.seen_class_count,
         }
-        if self.distribution_enabled:
-            state["calibration_history"] = list(self.calibration_history)
         return state
 
     def load_checkpoint_state(
@@ -824,15 +480,6 @@ class AtlasV3(ContinualModel):
         self.completed_tasks = completed
         self.old_class_count = int(state["old_class_count"])
         self.seen_class_count = int(state["seen_class_count"])
-        if self.distribution_enabled:
-            calibration = [
-                dict(row) for row in state.get("calibration_history", [])
-            ]
-            if strict and len(calibration) != completed:
-                raise ValueError(
-                    "ATLAS-v3 distribution checkpoint calibration history is incomplete"
-                )
-            self.calibration_history = calibration
 
 
 def build_model_from_components(args, loss, transform, backbone) -> AtlasV3:

@@ -81,7 +81,6 @@ def _rows(model, dataset, fold: int, after_task: int):
         stop = start + dataset.task_num_classes[eval_task]
         for label in range(start, stop):
             mask = labels == label
-            class_raw = raw[mask].float()
             class_norm = normalized[mask]
             oracle_proto = F.normalize(class_norm.mean(0), dim=0, eps=1.0e-8)
             stored_proto = F.normalize(model.net.prototype_bank[label].cpu(), dim=0, eps=1.0e-8)
@@ -104,24 +103,10 @@ def _rows(model, dataset, fold: int, after_task: int):
                 "covariance_bures": "",
             }
             if model.mode in {
-                "gated_oas", "frozen_raw_oas", "oas_static",
-                "oas_transport", "oas_oracle", "normalized_oas_static",
-                "transport_normalized_oas",
+                "normalized_oas_static", "transport_normalized_oas",
                 "gated_transport_normalized_oas_no_histneg",
-                "histneg_normalized_oas_static",
-                "histneg_transport_normalized_oas",
-                "gated_normalized_oas",
             }:
-                class_statistics = (
-                    class_norm
-                    if model.mode in {
-                        "normalized_oas_static", "histneg_normalized_oas_static",
-                        "transport_normalized_oas",
-                        "gated_transport_normalized_oas_no_histneg",
-                        "histneg_transport_normalized_oas", "gated_normalized_oas",
-                    }
-                    else class_raw
-                )
+                class_statistics = class_norm
                 oracle_mean = class_statistics.mean(0)
                 centered = class_statistics - oracle_mean
                 oracle_covariance = centered.t() @ centered / float(max(class_statistics.shape[0] - 1, 1))

@@ -19,8 +19,6 @@ FOLDS="${FOLDS:-all}"
 REPO_ROOT=/datastore/uittogether/LuuTru/Thuchd/benchmarkWSI/version_moi/Benchmark-WSI/
 VARIANTS=(
     atlasv3_acl_transport_normalized_oas
-    #atlasv3_acl_gated_transport_normalized_oas_no_histneg
-    atlasv3_acl_histneg_normalized_oas_static_w01
 )
 
 if [[ "$ACTION" != "run" && "$ACTION" != "resume" ]]; then

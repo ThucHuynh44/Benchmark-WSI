@@ -148,39 +148,20 @@ def _scalar_observe_metrics(result) -> Dict[str, float]:
 
 TRAIN_COMPONENT_FIELDS = [
     "method", "ablation_id", "fold", "task", "epoch", "updates",
-    "loss", "loss_cls", "loss_atlas_nce", "loss_reconstruction",
-    "loss_manifold", "loss_attention", "loss_acl", "loss_histneg",
-    "loss_task_margin", "replay_bags", "buffer_size",
+    "loss", "loss_cls", "loss_reconstruction",
+    "loss_manifold", "loss_attention", "loss_acl", "replay_bags", "buffer_size",
 ]
 
 ATLAS_DIAGNOSTIC_FIELDS = [
-    "method", "ablation_id", "fold", "task", "semantic_rho",
-    "intra_class_distance", "intra_class_count", "inter_class_separation",
-    "inter_class_pair_count", "embedding_drift", "attention_drift",
-    "drift_bag_count", "old_current_overlap", "old_current_pair_count",
-    "within_current_overlap", "within_current_pair_count", "all_seen_overlap",
-    "all_seen_pair_count", "atlas_valid_count", "mean_effective_rank",
-    "memory_count",
-    "covariance_trace_before", "covariance_trace_after",
-    "effective_lowrank_rank", "sub_prototype_occupancy_min",
-    "prototype_offset_norm", "distribution_memory_bytes",
-    "selected_hyperparameters", "transport_kind", "effective_rank",
+    "method", "ablation_id", "fold", "task",
+    "transport_kind", "effective_rank",
     "pair_train_mse", "bootstrap_oob_mse", "transport_delta_norm",
     "transport_condition_number", "coverage_min", "coverage_mean",
     "coverage_max", "step_gate_min", "step_gate_mean", "step_gate_max",
     "bootstrap_uncertainty_min", "bootstrap_uncertainty_mean",
-    "bootstrap_uncertainty_max", "hist_reliability_min",
-    "hist_reliability_mean", "hist_reliability_max", "bootstrap_status",
+    "bootstrap_uncertainty_max", "bootstrap_status",
     "bootstrap_valid_oob", "transport_fallback_reason",
-    "stored_statistics_bytes", "retained_wsis", "oracle_revisited_wsis",
-    "oracle_mean_drift_cosine_mean",
-    "oracle_mean_residual_ungated_cosine_mean",
-    "oracle_mean_residual_gated_cosine_mean",
-    "oracle_covariance_drift_relative_frobenius_mean",
-    "oracle_covariance_residual_ungated_relative_frobenius_mean",
-    "oracle_covariance_residual_gated_relative_frobenius_mean",
-    "oracle_mean_gain_ungated_mean", "oracle_mean_gain_gated_mean",
-    "oracle_covariance_gain_ungated_mean", "oracle_covariance_gain_gated_mean",
+    "stored_statistics_bytes", "retained_wsis",
 ]
 
 DISTRIBUTION_EVAL_FIELDS = [

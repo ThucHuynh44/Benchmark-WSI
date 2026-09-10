@@ -121,49 +121,15 @@ backbones:
     backbone_max_patches: 0
 
 methods:
-  atlas_v2:
-    # Clean FEATHER additive ladder. Individual mechanisms are selected only by
-    # configs/atlas_v2_ablations.yaml; the method defaults to A0.
-    buffer_size: 30
-    minibatch_size: 1
-    bags_per_update: 1
-    atlasv2_lora: false
-    atlasv2_replay: false
-    atlasv2_prototype: false
-    atlasv2_realign: false
-    atlasv2_prompt: false
-    atlasv2_nce: false
-    atlasv2_train_classifier: true
-    atlasv2_lora_rank: 8
-    atlasv2_lora_alpha: 8.0
-    atlasv2_lora_merge_scale: 1.0
-    atlasv2_prompt_fusion: 0.5
-    atlasv2_prompt_ce_weight: 1.0
-    atlasv2_nce_temperature: 0.07
-    atlasv2_nce_weight: 1.0
-    atlasv2_text_model_id: MahmoodLab/TITAN
-    atlasv2_text_revision: dac6773d9961cfc75503440676ff157a2c6e8d2e
-
   atlas_v3:
-    # Training-free frozen-FEATHER subset of ATLAS-v2. The ablation registry
-    # selects exactly one prototype/distribution classifier per run.
+    # Training-free frozen-FEATHER prototype/distribution suite. The ablation
+    # registry selects exactly one classifier per run.
     backbone_cache_dir: /datastore/uittogether/LuuTru/Thuchd/benchmarkWSI/huggingface_cache
     atlasv3_distribution_mode: prototype
-    atlasv3_distribution_alpha: 0.1
-    atlasv3_distribution_rho: 0.5
-    atlasv3_distribution_rank: 8
-    atlasv3_distribution_clusters: 3
-    atlasv3_distribution_tau_multi: 0.1
-    atlasv3_distribution_beta: 0.25
-    atlasv3_distribution_tau_task: 0.1
-    atlasv3_pt_steps: 200
-    atlasv3_pt_lr: 0.05
-    atlasv3_pt_samples_per_class: 32
-    atlasv3_pt_margin: 0.2
 
   atlas_v3_acl:
     # Replay-free one-epoch full-FEATHER adaptation. The dedicated ablation
-    # registry selects transport/loss controls through atlasv3_acl_mode.
+    # registry selects the paper ablation through atlasv3_acl_mode.
     # Download the pinned gated FEATHER snapshot once into a shared cache.
     # Authentication is read from the HF_TOKEN environment variable.
     backbone_allow_download: true
@@ -175,49 +141,13 @@ methods:
     optim_wd: 1.0e-4
     atlasv3_acl_mode: acl
     atlasv3_acl_temperature: 0.1
-    atlasv3_acl_hist_weight: 1.0
-    atlasv3_acl_hist_temperature: 0.1
-    atlasv3_acl_hist_margin: 0.2
-    atlasv3_acl_hist_topk: 8
     atlasv3_acl_transport_rank: 8
     atlasv3_acl_transport_ridge: 1.0e-3
-    atlasv3_acl_ldc_steps: 100
-    atlasv3_acl_ldc_lr: 1.0e-3
-    atlasv3_acl_sdc_sigma: 0.3
+    atlasv3_acl_transport_mean_scale: 1.0
+    atlasv3_acl_transport_cov_scale: 1.0
     atlasv3_acl_coverage_energy: 0.95
     atlasv3_acl_bootstrap_samples: 20
     atlasv3_acl_uncertainty_beta: 10.0
-    atlasv3_acl_reliability_floor: 0.1
-    atlasv3_acl_reliability_momentum: 0.5
-    atlasv3_acl_task_margin: 0.2
-    atlasv3_acl_task_weight: 0.1
-
-  atlas_mil:
-    # Full-bag genuine attention; run the primary method with --backbone feather.
-    atlas_replay: true
-    # Ablation registry enables task-boundary geometry/drift artifacts explicitly.
-    atlas_diagnostics: false
-    buffer_size: 30
-    minibatch_size: 1
-    bags_per_update: 1
-    pmp_k: 400
-    atlas_rank: 8
-    atlas_nce_temperature: 0.07
-    atlas_centroid_momentum: 0.99
-    latent_mask_ratio: 0.5
-    # Set individual loss weights to zero for contribution ablations.
-    atlas_nce_weight: 1.0
-    reconstruction_weight: 1.0
-    manifold_weight: 1.0
-    attention_weight: 1.0
-    atlas_prompt_weight: 0.5
-    atlas_logit_scale: 10.0
-    atlas_lora_rank: 8
-    atlas_lora_mode: semantic
-    atlas_lora_merge_scale: 1.0
-    # Separate from FEATHER's backbone_model_id/backbone_revision.
-    atlas_text_model_id: MahmoodLab/TITAN
-    atlas_text_revision: dac6773d9961cfc75503440676ff157a2c6e8d2e
 
   amil:
     # Tổng sức chứa PMP, tính theo pseudo-bag/WSI chứ không phải số patch.

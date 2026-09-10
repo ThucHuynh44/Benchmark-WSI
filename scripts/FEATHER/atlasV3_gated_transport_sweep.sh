@@ -24,8 +24,8 @@ if [[ "$ACTION" != "run" && "$ACTION" != "resume" ]]; then
     echo "ERROR: ACTION must be run or resume; got '$ACTION'." >&2
     exit 2
 fi
-if [[ -z "$SWEEP_SETTINGS" && "$SWEEP_GROUP" != "strength" && "$SWEEP_GROUP" != "map" && "$SWEEP_GROUP" != "gate" ]]; then
-    echo "ERROR: SWEEP_GROUP must be strength, map, or gate; got '$SWEEP_GROUP'." >&2
+if [[ -z "$SWEEP_SETTINGS" && "$SWEEP_GROUP" != "strength" && "$SWEEP_GROUP" != "map" ]]; then
+    echo "ERROR: SWEEP_GROUP must be strength or map; got '$SWEEP_GROUP'." >&2
     exit 2
 fi
 if ! [[ "$FOLD" =~ ^[0-9]$ ]]; then

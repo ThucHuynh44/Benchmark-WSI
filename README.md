@@ -38,7 +38,7 @@ checkpoints below `checkpoints/<exp_desc>/fold_<fold>/`.
 
 ## Method YAML configs
 
-Configs for ATLAS-MIL, AMIL, A-GEM, DER++, ER-ACE, online EWC, GDumb, Joint,
+Configs for AMIL, A-GEM, DER++, ER-ACE, online EWC, GDumb, Joint,
 LwF, SGD, LWSR, MICIL, OWLoRA, and QPMIL-VL are combined in
 `configs/methods.yaml`. Select
 one with `--model`:
@@ -94,83 +94,6 @@ The AMIL values `pmp_k=400`, `alpha=1`, `beta=1`, and
 and supplementary material do not publish concrete values for the first three
 or a separate KD temperature. They must not be described as paper defaults.
 
-### ATLAS-MIL
-
-ATLAS-MIL combines a prompt-anchored class atlas, multi-positive continual
-InfoNCE, prompt-conditioned masked latent reconstruction, MaxMinRand replay,
-attention distillation, and fixed-rank semantic soft-orthogonal LoRA merging.
-Its slide classifier blends projected TITAN text anchors with empirical FEATHER
-centroids and does not require a task ID at inference.
-
-Run the primary configuration explicitly because the common YAML backbone is
-TITAN, which does not expose genuine patch attention:
-
-```
-python utils/main.py --config configs/methods.yaml \
-  --model atlas_mil --backbone feather
-```
-
-`generic_mil` is also supported for synthetic tests. Both modes require 768-D
-features, a full input bag, and a memory capacity at least as large as the
-global class count. The TITAN text model ID/revision is configured separately
-through `atlas_text_model_id` and `atlas_text_revision`; it is loaded only to
-create fixed class anchors. All ATLAS hyperparameters in the shared YAML are
-benchmark-defined starting points rather than published paper defaults.
-
-#### ATLAS-MIL ablations
-
-The declarative ablation matrix is stored in
-`configs/atlas_mil_ablations.yaml`. It resolves to 34 unique variants and 340
-fold-runs; listing or dry-running the matrix does not start training:
-
-```
-python scripts/run_atlas_ablations.py list
-python scripts/run_atlas_ablations.py dry-run \
-  --variants atlas_ce_noreplay wo_replay full --folds 0
-```
-
-Run selected variants in the project's PyTorch environment. Every process owns
-one result/checkpoint directory, so completed folds can be resumed safely. A
-partial fold is rerun only when explicitly requested:
-
-```
-python scripts/run_atlas_ablations.py run \
-  --variants full wo_nce wo_reconstruction --folds all --gpus 0,1
-
-python scripts/run_atlas_ablations.py resume \
-  --variants full wo_nce wo_reconstruction --folds all --gpus 0,1 \
-  --rerun-incomplete
-```
-
-Results are isolated below
-`results/ablations/atlas_mil/<variant>/fold_<fold>/`. Build the benchmark,
-paired-delta, resource, and latent-mechanism tables with:
-
-```
-python scripts/summarize_atlas_ablations.py
-python scripts/summarize_atlas_ablations.py --strict
-```
-
-`sgd_ft` is an external reference, not an additive ATLAS stage. The
-`centroid_with_prompt_fallback` variant uses centroids only for finalized
-classes and deliberately falls back to their prompt anchors otherwise.
-
-For the architecture-selection stage, run the true no-LoRA control on all ten
-folds and the two intermediate Attention-KD weights only on folds 0–2:
-
-```
-python scripts/run_atlas_ablations.py run \
-  --variants full_no_lora --folds all --gpus 0
-
-python scripts/run_atlas_ablations.py run \
-  --variants att_w025 att_w05 --folds 0,1,2 --gpus 0
-```
-
-`full_no_lora` keeps replay, losses, prompts, centroids, and the frozen FEATHER
-backbone from `full`, but does not attach LoRA modules. This differs from
-`atlas_lora_mode=none`, which still trains and merges LoRA but skips the
-orthogonal projection. `atlas_ce` and `add_attention` remain the weight-0 and
-weight-1 endpoints of the Attention-KD pilot; they do not need to be rerun.
 
 ### LWSR, MICIL, OWLoRA, and QPMIL-VL
 
@@ -207,7 +130,6 @@ Supported combinations are deliberately narrow:
 
 | Method | TITAN | FEATHER | GigaPath | `generic_mil` | Frozen backbone |
 | --- | --- | --- | --- | --- | --- |
-| ATLAS-MIL | no | yes | no | tests | base frozen; LoRA/projector/decoder train |
 | LWSR | yes | yes | yes | no | no |
 | MICIL | yes | yes | yes | no | no |
 | OWLoRA | yes | yes | no | no | no |
@@ -218,7 +140,7 @@ MICIL use 768-D raw bags with TITAN/FEATHER and 1536-D raw bags with GigaPath;
 their slide embedding and classifier input remain 768-D. OWLoRA requires 768-D
 features. LWSR, MICIL, and OWLoRA require a trainable slide backbone, while
 QPMIL-VL loads only the pinned TITAN text tower and does not use the TITAN slide
-aggregator. ATLAS-MIL owns its freezing and adaptation policy internally.
+aggregator.
 
 The LWSR defaults are `buffer_size=10`, `minibatch_size=4`,
 `bags_per_update=4`, `buffer_max_patches=400`, `pair_loss_weight=1.0`,
@@ -402,159 +324,15 @@ The custom class may accept `forward(features)`, `forward(features, coords)`,
 or `forward(features, coords, patch_size_level0)` and return a logits tensor, a
 dictionary with `logits`, or ConSlide's five-item output tuple.
 
-## ATLAS-v2 additive ladder
 
-ATLAS-v2 is independent of the historical `atlas_mil` implementation and
-registry. Its settings are declared in
-`configs/atlas_v2_ablations.yaml`. Replay settings retain at most 30 selected
-WSIs total and store every selected WSI's complete pre-extracted feature bag;
-there is no patch selection, teacher target, attention KD, reconstruction,
-manifold loss, or SOLM projection.
+## ATLAS-v3 frozen baselines
 
-Validate the six-setting, three-fold Phase-1 pilot without launching jobs:
+ATLAS-v3 provides two training-free frozen-FEATHER baselines: continual NCM
+and train-only normalized OAS-LDA. Its implementation has no adapter,
+exemplar buffer, or trainable classifier.
 
-```bash
-python scripts/run_atlas_v2_ablations.py dry-run \
-  --variants \
-    atlasv2_base_frozen \
-    atlasv2_base_lora \
-    atlasv2_lora_replay \
-    atlasv2_lora_replay_proto \
-    atlasv2_lora_replay_proto_realign \
-    atlasv2_frozen_proto \
-  --folds 0,1,2 \
-  --gpus 0
-```
-
-Replace `dry-run` with `run` to launch those 18 fold-runs. Prompt and NCE are
-implemented as Phase-2 settings but are deliberately excluded from this pilot.
-Generate the non-ranking summary with:
-
-```bash
-python scripts/summarize_atlas_v2_ablations.py
-```
-
-The summarizer reads replay accounting from each run manifest and reads every
-evaluation matrix only once. Legacy manifests recorded replay accounting before
-training; for those runs the first summary uses memory-mapped checkpoint
-metadata and writes `replay_memory_cache.json` beside the summary. Later calls
-reuse that small cache and never deserialize the full feature-bag storage.
-
-The optional `atlasv2_base_lora_svd_orthogonal` geometry extension otherwise
-matches `atlasv2_base_lora`. It uses SVD at task boundaries to track the left
-subspace of merged LoRA updates and hard-projects each later LoRA update onto
-the orthogonal complement of that historical subspace.
-
-`atlasv2_base_lora_comel_owlora` is a separate LoRA-strategy control adapted
-from this repository's CoMEL OWLoRA implementation. At initialization it
-SVD-truncates each eligible frozen FEATHER linear weight at 99% energy and
-creates a frozen reference adapter. It then learns one weighted low-rank
-adapter per task, cumulatively applies all learned task adapters, adds CoMEL's
-intra-adapter orthogonality penalty, and projects the current adapter gradients
-away from the reference and previous task adapters. As in CoMEL, `qkv` layers
-use three times the configured rank. Unlike the original CoMEL trainer, which
-full-tunes task 0, this ATLAS-v2 adaptation keeps the pretrained base frozen and
-uses an adapter from task 0 so the comparison respects ATLAS-v2's backbone
-contract. Run the new setting alone with:
-
-```bash
-python scripts/run_atlas_v2_ablations.py dry-run \
-  --variants atlasv2_base_lora_comel_owlora \
-  --folds 0
-```
-
-The strategy-specific controls are `--atlasv2_comel_svd_energy` (default
-`0.99`) and `--atlasv2_comel_orthogonal_weight` (default `1.0`). Task adapters
-are intentionally not merged, so their parameter memory grows linearly with
-the number of tasks.
-
-The prototype-focused LoRA × replay factorial contains all four requested
-cells:
-
-| Setting | LoRA | Replay | Prototype | Linear CE |
-| --- | --- | --- | --- | --- |
-| `atlasv2_frozen_proto` | off | off | on | off |
-| `atlasv2_replay_proto` | off | on | on | off |
-| `atlasv2_lora_proto` | on | off | on | on |
-| `atlasv2_lora_replay_proto` | on | on | on | on |
-
-The two frozen cells disable classifier training because their post-task NCM
-inference has no trainable representation. The LoRA cells train the linear CE
-head because it supplies the gradient used to learn LoRA. Consequently,
-`atlasv2_replay_proto` is an intentional negative control: replay memory is
-populated, but a frozen embedding space should make its prototype predictions
-match `atlasv2_frozen_proto` up to numerical determinism.
-
-### Train-only frozen prototype extension
-
-The completed results motivate keeping the FEATHER representation frozen:
-`atlasv2_frozen_proto` reaches bACC `0.6856` and BWT `-0.0656`, while the
-ATLAS-MIL `pruned_neither` control reaches `0.6927` and `-0.0607`; the gap is
-small compared with their fold variation. In contrast, ATLAS-v2 LoRA and
-prototype realignment increase drift substantially. The controlled extension
-`atlasv2_frozen_proto_oas_lda` therefore changes only the prototype metric.
-
-At each task boundary it extracts embeddings from the current **training
-split**, accumulates normalized per-class means and pooled within-class scatter,
-then fits equal-prior LDA with automatic Oracle Approximating Shrinkage (OAS).
-This is a regularized Mahalanobis nearest-class-mean classifier: ordinary cosine
-NCM assumes a spherical metric, whereas this setting downweights noisy feature
-directions learned from training statistics. Old training data are represented
-exactly by sufficient statistics; no WSI replay buffer is needed. Evaluation is
-strictly read-only: it never updates means, covariance, shrinkage, or classifier
-weights from validation/test inputs.
-
-```bash
-python scripts/run_atlas_v2_ablations.py dry-run \
-  --variants atlasv2_frozen_proto_oas_lda \
-  --folds 0
-```
-
-Replace `dry-run` with `run --gpus 0` to train it. This is an experimental
-candidate, not a claimed improvement until its fold results are complete.
-
-### ATLAS frozen distribution suite
-
-The distribution suite adds ten frozen-FEATHER settings, from normalized
-diagonal and low-rank class distributions through deterministic spherical
-multi-prototypes, task-centroid/LME calibration, prototype-only tuning, and an
-architecture-faithful RanPAC Phase-2 control. `atlasv2_frozen_atlas_tf` is the
-training-free core; `atlasv2_frozen_atlas_pt` is the optional train-only
-prototype-offset extension. Neither method adapts on test slides.
-
-All implementation shapes use the runtime FEATHER classifier input dimension;
-the pinned FEATHER revision is additionally asserted to produce 512-D slide
-embeddings. NCM/ATLAS statistics use normalized embeddings, while RanPAC uses
-raw slide embeddings. Checkpoints contain distribution sufficient statistics,
-not train/validation slide embeddings.
-
-Model selection is fold-specific and validation-only. It is staged rather than
-a cross-stage Cartesian search: covariance, multi-prototype, and task-LME
-stages lock their selected predecessors. Calibration manifests are written to
-`results/<exp_desc>/evaluation/calibration/fold_<fold>.json` and explicitly
-record that no test cache is present.
-
-```bash
-python scripts/run_atlas_v2_ablations.py dry-run \
-  --variants atlasv2_frozen_proto_diag atlasv2_frozen_atlas_tf \
-  atlasv2_frozen_atlas_pt atlasv2_frozen_ranpac \
-  --folds 0
-```
-
-Experimental `run`/`resume` commands allow a dirty Git worktree. Manifests still
-record the commit and source-diff hash so runs remain traceable.
-
-## ATLAS-v3 frozen prototype suite
-
-ATLAS-v3 is the compact, training-free successor for the frozen-FEATHER branch
-of ATLAS-v2. Its implementation has no adapter, exemplar buffer, trainable
-linear classifier, prompt branch, or RanPAC path. The registry contains exactly
-11 settings: NCM, OAS-LDA, and these nine distribution modes: diagonal,
-diagonal shrinkage, low rank, task centroid, task LME, multi-prototype,
-prototype tuning, ATLAS-TF, and ATLAS-PT.
-
-The setting IDs use the `atlasv3_` prefix while preserving the descriptive
-suffixes from v2. List or validate the complete matrix with:
+The setting IDs use the `atlasv3_` prefix with descriptive classifier suffixes.
+List or validate the complete matrix with:
 
 ```bash
 python scripts/run_atlas_v3_ablations.py list
@@ -566,52 +344,43 @@ Run or resume selected settings in the project PyTorch environment:
 ```bash
 python scripts/run_atlas_v3_ablations.py run \
   --variants atlasv3_frozen_proto atlasv3_frozen_proto_oas_lda \
-  atlasv3_frozen_atlas_tf atlasv3_frozen_atlas_pt \
-  --folds all --gpus 0,1
-
-python scripts/run_atlas_v3_ablations.py resume \
-  --variants atlasv3_frozen_atlas_tf atlasv3_frozen_atlas_pt \
   --folds all --gpus 0,1 --rerun-incomplete
 ```
 
 Outputs are isolated under
-`results/ablations/atlas_v3/<variant>/fold_<fold>/`. All 11 settings skip the
-epoch loop and fit only train-split sufficient statistics at each task boundary;
-distribution hyperparameter selection remains fold-local and validation-only.
+`results/ablations/atlas_v3/<variant>/fold_<fold>/`. Both settings skip the
+epoch loop and fit only train-split sufficient statistics at each task boundary.
 
 ## ATLAS-v3 ACL transport suite
 
-`atlas_v3_acl` is a separate replay-free research branch. It adapts the full
-FEATHER slide encoder for one current-task epoch, freezes it again, and uses
-paired pre/post current-task embeddings to evaluate static, SDC, learned-linear,
-ridge, low-rank, and coverage/bootstrap-gated historical prototype transport.
-The FEATHER classifier remains frozen and no old WSI or embedding is retained.
-
-The registry includes ten ACL settings plus a frozen raw-OAS control. The
-ungated `histneg_lowrank` setting is retained explicitly so the effect of
-coverage gating is not confounded with historical negatives.
+`atlas_v3_acl` adapts the full FEATHER slide encoder for one current-task epoch
+and then freezes it again. The paper registry contains four settings: ACL+NCM,
+ACL+static normalized OAS-LDA, ACL+ungated low-rank transport, and the primary
+ACL+coverage/bootstrap-gated low-rank transport method. No setting uses
+historical negatives, replay, or retained old WSI embeddings.
 
 ```bash
 python scripts/run_atlas_v3_acl_ablations.py list
 python scripts/run_atlas_v3_acl_ablations.py dry-run --variants all --folds 0
 
 python scripts/run_atlas_v3_acl_ablations.py run \
-  --variants atlasv3_acl atlasv3_acl_histneg \
-  atlasv3_acl_histneg_lowrank_transport atlasv3_acl_gated_transport \
+  --variants atlasv3_acl atlasv3_acl_normalized_oas_static \
+  atlasv3_acl_transport_normalized_oas \
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg \
   --folds all --gpus 0,1
 ```
 
-All hyperparameters in the primary registry are fixed across folds. Raw OAS-LDA
-stores only per-class counts, means, and scatters; other modes retain normalized
-class prototypes plus transport reliability. Transport fitting pairs are
-current-task-only transient tensors and are cleared before task checkpoints.
+All hyperparameters in the primary registry are fixed across folds. Normalized
+OAS-LDA stores only per-class counts, means, and scatters. Transport fitting
+pairs are current-task-only transient tensors and are cleared before task
+checkpoints.
 
 Old training splits may be reopened only by the explicitly offline oracle audit;
 its output is never consumed by training or model selection:
 
 ```bash
 python scripts/audit_atlas_v3_acl_transport.py \
-  --exp-desc ablations/atlas_v3_acl/atlasv3_acl_gated_transport/fold_0 \
+  --exp-desc ablations/atlas_v3_acl/atlasv3_acl_gated_transport_normalized_oas_no_histneg/fold_0 \
   --fold 0 --after-task 9
 ```
 

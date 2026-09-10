@@ -55,43 +55,6 @@ def _matrix_diagnostics(matrix: torch.Tensor, source: torch.Tensor, target: torc
     }
 
 
-def fit_ldc(
-    source: torch.Tensor,
-    target: torch.Tensor,
-    *,
-    steps: int,
-    learning_rate: float,
-) -> tuple[torch.Tensor, Dict[str, float]]:
-    """Fit the learned no-bias linear projector used as the LDC control."""
-
-    source, target = _pairs(source, target)
-    dimensions = source.shape[1]
-    with torch.enable_grad():
-        projector = torch.nn.Linear(dimensions, dimensions, bias=False, device=source.device)
-        with torch.no_grad():
-            projector.weight.copy_(torch.eye(dimensions, device=source.device))
-        optimizer = torch.optim.AdamW(projector.parameters(), lr=float(learning_rate), weight_decay=0.0)
-        for _ in range(int(steps)):
-            optimizer.zero_grad(set_to_none=True)
-            loss = F.mse_loss(projector(source), target)
-            loss.backward()
-            optimizer.step()
-    # Linear stores y=x@weight.T; publish a row-convention matrix.
-    matrix = projector.weight.detach().t().contiguous()
-    return matrix, _matrix_diagnostics(matrix, source, target)
-
-
-def fit_sldc(source: torch.Tensor, target: torch.Tensor, *, ridge: float) -> tuple[torch.Tensor, Dict[str, float]]:
-    """Closed-form full ridge map regularized toward identity."""
-
-    source, target = _pairs(source, target)
-    dimensions = source.shape[1]
-    identity = torch.eye(dimensions, device=source.device, dtype=source.dtype)
-    scale = float(source.shape[0])
-    lhs = source.t() @ source / scale + float(ridge) * identity
-    rhs = source.t() @ target / scale + float(ridge) * identity
-    matrix = torch.linalg.solve(lhs, rhs)
-    return matrix, _matrix_diagnostics(matrix, source, target)
 
 
 def fit_lowrank_residual(
@@ -147,15 +110,6 @@ def support_basis(values: torch.Tensor, *, energy: float) -> torch.Tensor:
     count = min(count, int((spectrum > torch.finfo(spectrum.dtype).eps).sum()))
     return vh[:count].t().contiguous()
 
-
-def mean_coverage(points: torch.Tensor, source: torch.Tensor, *, energy: float) -> torch.Tensor:
-    basis = support_basis(source, energy=energy)
-    centered = points.float() - source.float().mean(0, keepdim=True)
-    denominator = centered.square().sum(1).clamp_min(torch.finfo(centered.dtype).eps)
-    if basis.shape[1] == 0:
-        return torch.zeros(points.shape[0], device=points.device, dtype=points.dtype)
-    numerator = (centered @ basis.to(centered)).square().sum(1)
-    return (numerator / denominator).clamp(0.0, 1.0)
 
 
 def distribution_coverage(

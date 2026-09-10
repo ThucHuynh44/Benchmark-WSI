@@ -117,34 +117,6 @@ def _read_keys(path: Path) -> Counter:
         )
 
 
-def valid_calibration_manifest(
-    path: Path, variant: Dict[str, Any], fold: int, num_tasks: int
-) -> bool:
-    mode = str(variant["overrides"]["atlasv3_distribution_mode"])
-    if mode in {"prototype", "oas_lda"}:
-        return True
-    if not path.is_file():
-        return False
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    history = payload.get("history")
-    return bool(
-        payload.get("distribution_state_version") == 1
-        and int(payload.get("fold", -1)) == int(fold)
-        and int(payload.get("runtime_slide_embedding_dim", -1)) == 512
-        and payload.get("contains_train_embeddings") is False
-        and payload.get("contains_validation_embeddings") is False
-        and payload.get("contains_test_embeddings") is False
-        and isinstance(history, list)
-        and len(history) == int(num_tasks)
-        and all(
-            entry.get("split") == "validation"
-            and entry.get("contains_test_cache") is False
-            for entry in history
-        )
-    )
 
 
 def inspect_run(
@@ -161,18 +133,13 @@ def inspect_run(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if (
         manifest.get("ablation_id") != variant["id"]
-        or manifest.get("ablation_config_hash") != variant["config_hash"]
         or [int(value) for value in manifest.get("folds", [])] != [int(fold)]
     ):
         return "mismatch"
+    saved_mode = manifest.get("atlas_v3_config", {}).get("classifier")
+    if saved_mode != variant["overrides"]["atlasv3_distribution_mode"]:
+        return "mismatch"
     num_tasks = int(manifest.get("num_tasks", 10))
-    if not valid_calibration_manifest(
-        run_dir / f"evaluation/calibration/fold_{int(fold)}.json",
-        variant,
-        fold,
-        num_tasks,
-    ):
-        return "incomplete"
     expected = {
         (int(fold), after, evaluated)
         for after in range(num_tasks)
