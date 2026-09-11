@@ -1,32 +1,29 @@
 #!/bin/bash
-#SBATCH --job-name=atlasV3Frozen
-#SBATCH --output=logs/FEATHER/atlasV3Frozen_%j.out
-#SBATCH --error=logs/FEATHER/atlasV3Frozen_%j.err
+#SBATCH --job-name=atlasV3Vis
+#SBATCH --output=logs/FEATHER/atlasV3Vis_%j.out
+#SBATCH --error=logs/FEATHER/atlasV3Vis_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=mps:l40:2
 #SBATCH --mem=32G
-#SBATCH --time=72:00:00
+#SBATCH --time=12:00:00
 
 set -eo pipefail
 
-REQUIRED_VRAM="${REQUIRED_VRAM:-8000}"
+REQUIRED_VRAM="${REQUIRED_VRAM:-10000}"
 MAX_RETRIES="${MAX_RETRIES:-5}"
-ACTION="${ACTION:-resume}"
-RERUN_INCOMPLETE="${RERUN_INCOMPLETE:-0}"
-FOLDS="${FOLDS:-all}"
+FOLD="${FOLD:-0}"
+AFTER_TASK="${AFTER_TASK:-9}"
+TSNE_TASKS="${TSNE_TASKS:-0,1,2,9}"
+MAX_PER_CLASS="${MAX_PER_CLASS:-20}"
+HEATMAP_TASK="${HEATMAP_TASK:-0}"
+SLIDE_ID="${SLIDE_ID:-patient_125_node_0}"
+THUMBNAIL="${THUMBNAIL:-/datastore/uittogether/LuuTru/Thuchd/Research/dataset/CAMELYON17/All/thumbnails/patient_125_node_0.jpg}"
+WSI="${WSI:-}"
+THUMBNAIL_MAX_SIZE="${THUMBNAIL_MAX_SIZE:-1600}"
 REPO_ROOT=/datastore/uittogether/LuuTru/Thuchd/benchmarkWSI/version_moi/Benchmark-WSI/
-VARIANTS=(
-    #atlasv3_frozen_proto
-    atlasv3_frozen_proto_empirical_lda
-    #atlasv3_frozen_proto_oas_lda
-)
-
-if [[ "$ACTION" != "run" && "$ACTION" != "resume" ]]; then
-    echo "ERROR: ACTION must be run or resume; got '$ACTION'." >&2
-    exit 2
-fi
+OUTPUT="${OUTPUT:-results/visualizations/atlas_v3/fold_${FOLD}_task_${AFTER_TASK}}"
 
 mkdir -p "$REPO_ROOT/logs/FEATHER"
 module clear -f
@@ -39,6 +36,9 @@ cd "$REPO_ROOT"
 export PYTHONUNBUFFERED=1
 export HF_HUB_CACHE=/datastore/uittogether/LuuTru/Thuchd/benchmarkWSI/huggingface_cache
 export HF_HUB_DISABLE_XET=1
+export MPLBACKEND=Agg
+export MPLCONFIGDIR="/tmp/matplotlib-atlasv3-${SLURM_JOB_ID}"
+export XDG_CACHE_HOME="/tmp/xdg-atlasv3-${SLURM_JOB_ID}"
 unset PYTORCH_CUDA_ALLOC_CONF
 
 gpu_check_local() {
@@ -103,30 +103,34 @@ export CUDA_VISIBLE_DEVICES="$BEST_GPU"
 
 export CUDA_MPS_PIPE_DIRECTORY="/tmp/nvidia-mps-job${SLURM_JOB_ID}"
 export CUDA_MPS_LOG_DIRECTORY="/tmp/nvidia-mps-log-job${SLURM_JOB_ID}"
-mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
+mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY" "$MPLCONFIGDIR" "$XDG_CACHE_HOME"
 cleanup() {
-    rm -rf "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
+    rm -rf "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY" "$MPLCONFIGDIR" "$XDG_CACHE_HOME"
 }
 trap cleanup EXIT
 
 echo "HOSTNAME=$(hostname)"
 echo "SLURM_JOB_ID=$SLURM_JOB_ID"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
-echo "ACTION=$ACTION"
-echo "VARIANTS=${VARIANTS[*]}"
-echo "FOLDS=$FOLDS"
-echo "MODE=FROZEN_STATISTICS_ONLY"
+echo "FOLD=$FOLD AFTER_TASK=$AFTER_TASK TSNE_TASKS=$TSNE_TASKS"
+echo "HEATMAP_TASK=$HEATMAP_TASK SLIDE_ID=$SLIDE_ID"
+echo "WSI=${WSI:-<none>} THUMBNAIL=$THUMBNAIL"
 nvidia-smi -i "$BEST_GPU"
 
-RUN_COMMAND=(
-    python -u scripts/run_atlas_v3_ablations.py
-    "$ACTION"
-    --variants "${VARIANTS[@]}"
-    --folds "$FOLDS"
+VIS_ARGS=(
+    --fold "$FOLD"
+    --after-task "$AFTER_TASK"
+    --tsne-tasks "$TSNE_TASKS"
+    --max-per-class "$MAX_PER_CLASS"
+    --heatmap-task "$HEATMAP_TASK"
+    --slide-id "$SLIDE_ID"
+    --thumbnail "$THUMBNAIL"
+    --thumbnail-max-size "$THUMBNAIL_MAX_SIZE"
+    --output "$OUTPUT"
 )
-if [[ "$ACTION" == "resume" && "$RERUN_INCOMPLETE" == "1" ]]; then
-    RUN_COMMAND+=(--rerun-incomplete)
+if [ -n "$WSI" ]; then
+    VIS_ARGS+=(--wsi "$WSI")
 fi
-"${RUN_COMMAND[@]}"
+python -u scripts/visualize_atlas_v3_methods.py "${VIS_ARGS[@]}"
 
-echo "Hoan thanh ATLAS-v3 frozen prototype baselines."
+echo "Hoan thanh ATLAS-v3 t-SNE va Grad-CAM visualizations: $OUTPUT"

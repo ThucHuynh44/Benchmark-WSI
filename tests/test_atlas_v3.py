@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from models.atlas_v3 import (
+    AtlasV3Network,
     build_model_from_components,
     get_parser,
     validate_args,
@@ -108,6 +109,22 @@ class TaskData:
         self.val_loaders = [self.train_loader]
 
 
+class TrainOnlyTaskData:
+    def __init__(self, task, values):
+        self.current_task = task + 1
+        self.train_loader = DataLoader(
+            Bags(values), batch_size=1, shuffle=False, collate_fn=collate
+        )
+
+    @property
+    def val_loaders(self):
+        raise AssertionError("Classifier statistics must not read validation data")
+
+    @property
+    def test_loaders(self):
+        raise AssertionError("Classifier statistics must not read test data")
+
+
 def build(options):
     torch.manual_seed(3)
     with patch("models.atlas_v3.validate_args", return_value=None), patch(
@@ -119,10 +136,11 @@ def build(options):
 
 
 class AtlasV3RegistryTests(unittest.TestCase):
-    def test_registry_has_exactly_the_two_paper_baselines(self):
+    def test_registry_has_exactly_the_three_classifier_ablation_baselines(self):
         registry = load_registry(REGISTRY)
         self.assertEqual(tuple(registry["variants"]), SETTING_IDS)
-        self.assertEqual(len(SETTING_IDS), 2)
+        self.assertEqual(len(SETTING_IDS), 3)
+        self.assertIn("atlasv3_frozen_proto_empirical_lda", SETTING_IDS)
         for variant_id, variant in registry["variants"].items():
             self.assertEqual(
                 variant["overrides"],
@@ -132,6 +150,13 @@ class AtlasV3RegistryTests(unittest.TestCase):
             self.assertIn("atlas_v3", command)
             self.assertIn("feather", command)
 
+    def test_frozen_slurm_job_runs_all_classifier_ablation_settings(self):
+        source = (
+            ROOT / "scripts" / "FEATHER" / "atlasV3_frozen.sh"
+        ).read_text(encoding="utf-8")
+        for setting_id in SETTING_IDS:
+            self.assertIn(setting_id, source)
+
     def test_implementation_has_no_removed_mechanism_code(self):
         source = (ROOT / "models" / "atlas_v3.py").read_text(encoding="utf-8").lower()
         self.assertNotIn("lora", source)
@@ -140,6 +165,56 @@ class AtlasV3RegistryTests(unittest.TestCase):
 
 
 class AtlasV3Tests(unittest.TestCase):
+    def test_empirical_lda_matches_worked_pooled_covariance_example(self):
+        network = AtlasV3Network(
+            TinyFeather(classes=2),
+            num_classes=2,
+            embedding_dim=2,
+            mode="empirical_lda",
+        )
+        class_zero = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]])
+        class_one = torch.tensor([[1.0, 0.0], [0.0, -1.0], [-1.0, 0.0]])
+        for label, embeddings in enumerate((class_zero, class_one)):
+            network.set_prototype(label, embeddings)
+            network.update_lda_statistics(label, embeddings)
+        network.fit_lda(seen_classes=2)
+
+        logits = network.inference_logits(
+            torch.tensor([[0.0, 1.0]]), seen_classes=2
+        )
+        self.assertTrue(
+            torch.allclose(
+                logits,
+                torch.tensor([[5.0 / 6.0, -7.0 / 6.0]]),
+                atol=1.0e-5,
+            )
+        )
+        self.assertEqual(float(network.lda_shrinkage), 0.0)
+
+    def test_empirical_lda_fits_only_current_task_train_embeddings(self):
+        task = TrainOnlyTaskData(
+            0,
+            [
+                bag(0, patches=7, shift=-1.0),
+                bag(0, patches=8, shift=-0.8),
+                bag(1, patches=7, shift=0.8),
+                bag(1, patches=8, shift=1.0),
+            ],
+        )
+        model = build(args(atlasv3_distribution_mode="empirical_lda"))
+        model.begin_task(task)
+        model.end_task(task)
+
+        metadata = model.get_run_metadata()
+        accounting = metadata["prototype_metric_accounting"]
+        self.assertEqual(accounting["metric"], "normalized_empirical_pooled_lda")
+        self.assertEqual(accounting["fit_data"], "current_task_train_only")
+        self.assertEqual(accounting["train_samples"], 4)
+        self.assertEqual(accounting["within_class_degrees"], 2)
+        self.assertEqual(accounting["covariance_solver"], "hermitian_pseudoinverse")
+        self.assertEqual(accounting["shrinkage"], 0.0)
+        self.assertTrue(all(not parameter.requires_grad for parameter in model.net.parameters()))
+
     def test_parser_exposes_exact_classifier_modes(self):
         parser = get_parser()
         parsed = parser.parse_args(
@@ -151,7 +226,10 @@ class AtlasV3Tests(unittest.TestCase):
             for item in parser._actions
             if item.dest == "atlasv3_distribution_mode"
         )
-        self.assertEqual(tuple(action.choices), ("prototype", "oas_lda"))
+        self.assertEqual(
+            tuple(action.choices),
+            ("prototype", "empirical_lda", "oas_lda"),
+        )
 
     def test_validation_rejects_invalid_backbone_and_distribution_values(self):
         baseline = args(feature_dim=768)

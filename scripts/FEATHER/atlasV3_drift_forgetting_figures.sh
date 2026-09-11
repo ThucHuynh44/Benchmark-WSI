@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=atlasV3Frozen
-#SBATCH --output=logs/FEATHER/atlasV3Frozen_%j.out
-#SBATCH --error=logs/FEATHER/atlasV3Frozen_%j.err
+#SBATCH --job-name=atlasV3DriftFig
+#SBATCH --output=logs/FEATHER/atlasV3DriftFig_%j.out
+#SBATCH --error=logs/FEATHER/atlasV3DriftFig_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -11,22 +11,17 @@
 
 set -eo pipefail
 
-REQUIRED_VRAM="${REQUIRED_VRAM:-8000}"
+REQUIRED_VRAM="${REQUIRED_VRAM:-10000}"
 MAX_RETRIES="${MAX_RETRIES:-5}"
-ACTION="${ACTION:-resume}"
-RERUN_INCOMPLETE="${RERUN_INCOMPLETE:-0}"
 FOLDS="${FOLDS:-all}"
+AFTER_TASKS="${AFTER_TASKS:-1-9}"
+MAX_WSIS_PER_TASK="${MAX_WSIS_PER_TASK:-0}"
+OVERWRITE="${OVERWRITE:-0}"
+RUN_PROTOTYPE_AUDIT="${RUN_PROTOTYPE_AUDIT:-1}"
 REPO_ROOT=/datastore/uittogether/LuuTru/Thuchd/benchmarkWSI/version_moi/Benchmark-WSI/
-VARIANTS=(
-    #atlasv3_frozen_proto
-    atlasv3_frozen_proto_empirical_lda
-    #atlasv3_frozen_proto_oas_lda
-)
-
-if [[ "$ACTION" != "run" && "$ACTION" != "resume" ]]; then
-    echo "ERROR: ACTION must be run or resume; got '$ACTION'." >&2
-    exit 2
-fi
+FEATURE_ROOT=results/diagnostics/atlas_v3_drift_forgetting/feature_drift
+PROTOTYPE_ROOT=results/diagnostics/atlas_v3_transport_correction
+FIGURE_ROOT=results/diagnostics/atlas_v3_drift_forgetting/figures_drift_transport
 
 mkdir -p "$REPO_ROOT/logs/FEATHER"
 module clear -f
@@ -39,6 +34,9 @@ cd "$REPO_ROOT"
 export PYTHONUNBUFFERED=1
 export HF_HUB_CACHE=/datastore/uittogether/LuuTru/Thuchd/benchmarkWSI/huggingface_cache
 export HF_HUB_DISABLE_XET=1
+export MPLBACKEND=Agg
+export MPLCONFIGDIR="/tmp/matplotlib-atlasv3-drift-${SLURM_JOB_ID}"
+export XDG_CACHE_HOME="/tmp/xdg-atlasv3-drift-${SLURM_JOB_ID}"
 unset PYTORCH_CUDA_ALLOC_CONF
 
 gpu_check_local() {
@@ -103,30 +101,54 @@ export CUDA_VISIBLE_DEVICES="$BEST_GPU"
 
 export CUDA_MPS_PIPE_DIRECTORY="/tmp/nvidia-mps-job${SLURM_JOB_ID}"
 export CUDA_MPS_LOG_DIRECTORY="/tmp/nvidia-mps-log-job${SLURM_JOB_ID}"
-mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
+mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY" "$MPLCONFIGDIR" "$XDG_CACHE_HOME"
 cleanup() {
-    rm -rf "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
+    rm -rf "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY" "$MPLCONFIGDIR" "$XDG_CACHE_HOME"
 }
 trap cleanup EXIT
 
 echo "HOSTNAME=$(hostname)"
 echo "SLURM_JOB_ID=$SLURM_JOB_ID"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
-echo "ACTION=$ACTION"
-echo "VARIANTS=${VARIANTS[*]}"
-echo "FOLDS=$FOLDS"
-echo "MODE=FROZEN_STATISTICS_ONLY"
+echo "FOLDS=$FOLDS AFTER_TASKS=$AFTER_TASKS MAX_WSIS_PER_TASK=$MAX_WSIS_PER_TASK"
+echo "RUN_PROTOTYPE_AUDIT=$RUN_PROTOTYPE_AUDIT OVERWRITE=$OVERWRITE"
 nvidia-smi -i "$BEST_GPU"
 
-RUN_COMMAND=(
-    python -u scripts/run_atlas_v3_ablations.py
-    "$ACTION"
-    --variants "${VARIANTS[@]}"
-    --folds "$FOLDS"
-)
-if [[ "$ACTION" == "resume" && "$RERUN_INCOMPLETE" == "1" ]]; then
-    RUN_COMMAND+=(--rerun-incomplete)
+if [[ "$RUN_PROTOTYPE_AUDIT" == "1" ]]; then
+    PROTOTYPE_COMMAND=(
+        python -u scripts/audit_atlas_v3_transport_correction.py
+        --folds "$FOLDS"
+        --after-tasks "$AFTER_TASKS"
+        --output-root "$PROTOTYPE_ROOT"
+    )
+    if [[ "$OVERWRITE" == "1" ]]; then
+        PROTOTYPE_COMMAND+=(--overwrite)
+    fi
+    "${PROTOTYPE_COMMAND[@]}"
 fi
-"${RUN_COMMAND[@]}"
 
-echo "Hoan thanh ATLAS-v3 frozen prototype baselines."
+FEATURE_COMMAND=(
+    python -u scripts/audit_atlas_v3_feature_drift.py
+    --folds "$FOLDS"
+    --after-tasks "$AFTER_TASKS"
+    --max-wsis-per-task "$MAX_WSIS_PER_TASK"
+    --output-root "$FEATURE_ROOT"
+)
+if [[ "$OVERWRITE" == "1" ]]; then
+    FEATURE_COMMAND+=(--overwrite)
+fi
+"${FEATURE_COMMAND[@]}"
+
+PLOT_COMMAND=(
+    python -u scripts/plot_atlas_v3_drift_forgetting.py
+    --feature-root "$FEATURE_ROOT"
+    --prototype-root "$PROTOTYPE_ROOT"
+    --output "$FIGURE_ROOT"
+)
+if [[ "$FOLDS" == "all" && "$AFTER_TASKS" == "1-9" && "$MAX_WSIS_PER_TASK" == "0" ]]; then
+    PLOT_COMMAND+=(--strict)
+fi
+"${PLOT_COMMAND[@]}"
+
+echo "Hoan thanh ATLAS-v3 feature drift va three-way prototype-transport figures."
+echo "Output: $FIGURE_ROOT"

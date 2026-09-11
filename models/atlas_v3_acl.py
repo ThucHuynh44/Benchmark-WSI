@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from argparse import ArgumentParser, Namespace
+from argparse import ArgumentParser, BooleanOptionalAction, Namespace
 from typing import Any, Dict, List, Mapping, Tuple
 
 import torch
@@ -17,6 +17,7 @@ from backbone.pretrained_mil import FEATHER_MODEL_ID, FEATHER_REVISION
 from models.utils.atlas_transport import (
     bootstrap_gates,
     distribution_coverage,
+    fit_full_residual,
     fit_lowrank_residual,
     summarize,
 )
@@ -48,6 +49,9 @@ OAS_DIAGNOSTIC_SEMANTICS = {
     "transport_normalized_oas": "acl_only_normalized_oas_ungated_lowrank_transport_v1",
     "gated_transport_normalized_oas_no_histneg": "acl_only_normalized_oas_gated_lowrank_transport_v1",
 }
+FULL_RANK_DIAGNOSTIC_SEMANTICS = (
+    "acl_only_normalized_oas_gated_full_ridge_transport_v1"
+)
 
 
 def get_parser() -> ArgumentParser:
@@ -63,6 +67,12 @@ def get_parser() -> ArgumentParser:
     parser.add_argument("--atlasv3_acl_mode", choices=ACL_MODES, default="acl")
     parser.add_argument("--atlasv3_acl_temperature", type=float, default=0.1)
     parser.add_argument("--atlasv3_acl_transport_rank", type=int, default=8)
+    parser.add_argument(
+        "--atlasv3_acl_transport_full_rank",
+        action=BooleanOptionalAction,
+        default=False,
+        help="Use the complete ridge residual without SVD rank truncation.",
+    )
     parser.add_argument("--atlasv3_acl_transport_ridge", type=float, default=1.0e-3)
     parser.add_argument(
         "--atlasv3_acl_transport_mean_scale",
@@ -93,6 +103,8 @@ def validate_args(args) -> None:
         raise ValueError("ATLAS-v3 ACL requires full WSI bags")
     if int(getattr(args, "bags_per_update", 0)) <= 0:
         raise ValueError("bags_per_update must be positive")
+    if int(getattr(args, "n_epochs", -1)) < 0:
+        raise ValueError("n_epochs must be non-negative")
     if str(getattr(args, "atlasv3_acl_mode", "")) not in ACL_MODES:
         raise ValueError("Unknown ATLAS-v3 ACL mode")
     positive = ("atlasv3_acl_temperature", "atlasv3_acl_transport_ridge")
@@ -205,7 +217,10 @@ class AtlasV3ACL(ContinualModel):
         )
         super().__init__(network, loss, args, transform)
         self.mode = str(args.atlasv3_acl_mode)
-        self.TRAINING_FREE = False
+        # Epoch zero is a deliberate frozen-encoder control in the ACL-epoch
+        # ablation.  Marking it training-free also prevents the shared trainer
+        # from trying to restore a validation checkpoint that cannot exist.
+        self.TRAINING_FREE = int(getattr(args, "n_epochs", 1)) == 0
         self.num_classes = int(args.num_classes)
         self.embedding_dim = int(classifier.in_features)
         if str(getattr(args, "backbone_model_id", "")) == FEATHER_MODEL_ID and str(getattr(args, "backbone_revision", "")) == FEATHER_REVISION and self.embedding_dim != 512:
@@ -290,7 +305,7 @@ class AtlasV3ACL(ContinualModel):
         raw, labels, indices = self._collect_loader(dataset.train_loader)
         self._pair_pre_raw, self._pair_labels, self._pair_indices = raw, labels, indices
         self._set_current_anchors(raw, labels)
-        self._set_encoder_trainable(True)
+        self._set_encoder_trainable(not self.TRAINING_FREE)
         self._reset_optimizer()
 
     def _acl_loss(self, embedding: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
@@ -348,10 +363,16 @@ class AtlasV3ACL(ContinualModel):
         target_norm = F.normalize(post_raw.to(device), dim=1, eps=1.0e-8)
         ridge = float(self.args.atlasv3_acl_transport_ridge)
         rank = int(self.args.atlasv3_acl_transport_rank)
+        full_rank = bool(self.args.atlasv3_acl_transport_full_rank)
         source, target = source_norm, target_norm
         points = self.net.raw_mean[:self.old_class_count].detach().float().to(device)
-        main = fit_lowrank_residual(source, target, rank=rank, ridge=ridge)
+        main = (
+            fit_full_residual(source, target, ridge=ridge)
+            if full_rank
+            else fit_lowrank_residual(source, target, rank=rank, ridge=ridge)
+        )
         row.update(main.diagnostics)
+        row["requested_rank"] = "full" if full_rank else rank
         if self.mode in GATED_MODES:
             coverage = distribution_coverage(
                 points,
@@ -366,6 +387,7 @@ class AtlasV3ACL(ContinualModel):
                 samples=int(self.args.atlasv3_acl_bootstrap_samples),
                 beta=float(self.args.atlasv3_acl_uncertainty_beta),
                 seed=int(getattr(self.args, "seed", 0) or 0) + 1009 * int(getattr(self.args, "fold", 0) or 0) + 104729 * self.current_task,
+                full_rank=full_rank,
             )
             row.update(bootstrap)
             row.update(summarize(coverage, "coverage"))
@@ -510,7 +532,12 @@ class AtlasV3ACL(ContinualModel):
             "ablation_id": getattr(self.args, "ablation_id", None),
             "ablation_config_hash": getattr(self.args, "ablation_config_hash", None),
         }
-        if self.mode in OAS_DIAGNOSTIC_SEMANTICS:
+        if (
+            self.mode == "gated_transport_normalized_oas_no_histneg"
+            and bool(self.args.atlasv3_acl_transport_full_rank)
+        ):
+            config["implementation_semantics"] = FULL_RANK_DIAGNOSTIC_SEMANTICS
+        elif self.mode in OAS_DIAGNOSTIC_SEMANTICS:
             config["implementation_semantics"] = OAS_DIAGNOSTIC_SEMANTICS[self.mode]
         return config
 

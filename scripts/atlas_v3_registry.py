@@ -14,11 +14,13 @@ from configs.experiment_loader import load_experiment_config
 
 SETTING_IDS = (
     "atlasv3_frozen_proto",
+    "atlasv3_frozen_proto_empirical_lda",
     "atlasv3_frozen_proto_oas_lda",
 )
 
 EXPECTED_MODES = {
     "atlasv3_frozen_proto": "prototype",
+    "atlasv3_frozen_proto_empirical_lda": "empirical_lda",
     "atlasv3_frozen_proto_oas_lda": "oas_lda",
 }
 

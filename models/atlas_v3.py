@@ -1,4 +1,4 @@
-"""ATLAS-v3: frozen FEATHER NCM and normalized OAS-LDA baselines.
+"""ATLAS-v3: frozen FEATHER NCM and normalized pooled-LDA baselines.
 
 ATLAS-v3 is the training-free frozen-FEATHER suite. The slide encoder is
 always frozen and each task is learned from train-split slide embeddings at
@@ -26,13 +26,16 @@ from utils.args import add_experiment_args, add_management_args
 
 
 CHECKPOINT_VERSION = 1
+LDA_MODES = {"empirical_lda", "oas_lda"}
+
+
 def get_parser() -> ArgumentParser:
     parser = ArgumentParser(description="ATLAS-v3 frozen prototype learning")
     add_management_args(parser)
     add_experiment_args(parser)
     parser.add_argument(
         "--atlasv3_distribution_mode",
-        choices=("prototype", "oas_lda"),
+        choices=("prototype", "empirical_lda", "oas_lda"),
         default="prototype",
     )
     return parser
@@ -49,7 +52,7 @@ def validate_args(args) -> None:
         raise ValueError("ATLAS-v3 requires backbone_max_patches=0 (full bags)")
 
     mode = str(getattr(args, "atlasv3_distribution_mode", "prototype"))
-    if mode not in {"prototype", "oas_lda"}:
+    if mode not in {"prototype", *LDA_MODES}:
         raise ValueError(f"Unknown ATLAS-v3 distribution mode {mode!r}")
 
 
@@ -71,7 +74,7 @@ class AtlasV3Network(nn.Module):
         self.num_classes = int(num_classes)
         self.embedding_dim = int(embedding_dim)
         self.mode = str(mode)
-        self.prototype_lda_enabled = self.mode == "oas_lda"
+        self.prototype_lda_enabled = self.mode in LDA_MODES
         self.register_buffer(
             "prototype_bank", torch.zeros(num_classes, embedding_dim)
         )
@@ -213,31 +216,40 @@ class AtlasV3Network(nn.Module):
         dimensions = self.embedding_dim
         degrees = int(self.lda_degrees.item())
         empirical = self.lda_scatter.float() / float(max(degrees, 1))
-        mu = empirical.trace() / float(dimensions)
-        epsilon = torch.finfo(empirical.dtype).eps
-        if degrees == 0 or not torch.isfinite(mu) or float(mu) <= epsilon:
-            mu = empirical.new_tensor(1.0)
-            shrinkage = empirical.new_tensor(1.0)
-        else:
-            alpha = empirical.square().mean()
-            numerator = alpha + mu.square()
-            denominator = float(degrees + 1) * (
-                alpha - mu.square() / float(dimensions)
+        if self.mode == "empirical_lda":
+            covariance = 0.5 * (empirical + empirical.t())
+            shrinkage = empirical.new_zeros(())
+            means = self.lda_means[:seen_classes].float()
+            precision_means = means @ torch.linalg.pinv(
+                covariance, hermitian=True
             )
-            shrinkage = (
-                empirical.new_tensor(1.0)
-                if not torch.isfinite(denominator) or float(denominator) <= epsilon
-                else (numerator / denominator).clamp(0.0, 1.0)
-            )
-        covariance = (1.0 - shrinkage) * empirical
-        covariance.diagonal().add_(shrinkage * mu)
-        covariance.diagonal().add_(torch.clamp(mu * 1.0e-6, min=1.0e-6))
-        means = self.lda_means[:seen_classes].float()
-        cholesky, info = torch.linalg.cholesky_ex(covariance)
-        if int(info.item()) == 0:
-            precision_means = torch.cholesky_solve(means.t(), cholesky).t()
         else:
-            precision_means = means @ torch.linalg.pinv(covariance)
+            mu = empirical.trace() / float(dimensions)
+            epsilon = torch.finfo(empirical.dtype).eps
+            if degrees == 0 or not torch.isfinite(mu) or float(mu) <= epsilon:
+                mu = empirical.new_tensor(1.0)
+                shrinkage = empirical.new_tensor(1.0)
+            else:
+                alpha = empirical.square().mean()
+                numerator = alpha + mu.square()
+                denominator = float(degrees + 1) * (
+                    alpha - mu.square() / float(dimensions)
+                )
+                shrinkage = (
+                    empirical.new_tensor(1.0)
+                    if not torch.isfinite(denominator)
+                    or float(denominator) <= epsilon
+                    else (numerator / denominator).clamp(0.0, 1.0)
+                )
+            covariance = (1.0 - shrinkage) * empirical
+            covariance.diagonal().add_(shrinkage * mu)
+            covariance.diagonal().add_(torch.clamp(mu * 1.0e-6, min=1.0e-6))
+            means = self.lda_means[:seen_classes].float()
+            cholesky, info = torch.linalg.cholesky_ex(covariance)
+            if int(info.item()) == 0:
+                precision_means = torch.cholesky_solve(means.t(), cholesky).t()
+            else:
+                precision_means = means @ torch.linalg.pinv(covariance)
         biases = -0.5 * (means * precision_means).sum(1)
         if not torch.isfinite(precision_means).all() or not torch.isfinite(biases).all():
             raise FloatingPointError("ATLAS-v3 LDA produced non-finite parameters")
@@ -270,7 +282,7 @@ class AtlasV3(ContinualModel):
 
         requested_mode = str(args.atlasv3_distribution_mode)
         self.mode = requested_mode
-        self.prototype_lda_enabled = self.mode == "oas_lda"
+        self.prototype_lda_enabled = self.mode in LDA_MODES
         network = AtlasV3Network(
             backbone,
             int(args.num_classes),
@@ -408,13 +420,23 @@ class AtlasV3(ContinualModel):
             ),
         }
         if self.prototype_lda_enabled:
-            config.update(
-                {
-                    "prototype_metric": "oas_shrinkage_lda",
-                    "prototype_fit_data": "train_only",
-                    "test_time_adaptation": False,
-                }
-            )
+            if self.mode == "empirical_lda":
+                config.update(
+                    {
+                        "prototype_metric": "normalized_empirical_pooled_lda",
+                        "prototype_fit_data": "current_task_train_only",
+                        "covariance_solver": "hermitian_pseudoinverse",
+                        "test_time_adaptation": False,
+                    }
+                )
+            else:
+                config.update(
+                    {
+                        "prototype_metric": "oas_shrinkage_lda",
+                        "prototype_fit_data": "train_only",
+                        "test_time_adaptation": False,
+                    }
+                )
         return config
 
     def get_run_metadata(self) -> Dict[str, Any]:
@@ -424,17 +446,29 @@ class AtlasV3(ContinualModel):
             "atlas_v3_config_hash": hashlib.sha256(
                 json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest(),
-            "prototype_metric_accounting": (
-                {
-                    "metric": "oas_shrinkage_lda",
-                    "train_samples": int(self.net.lda_counts.sum().item()),
-                    "within_class_degrees": int(self.net.lda_degrees.item()),
-                    "oas_shrinkage": float(self.net.lda_shrinkage.item()),
-                    "test_time_adaptation": False,
-                }
-                if self.prototype_lda_enabled
-                else None
-            ),
+            "prototype_metric_accounting": self._metric_accounting(),
+        }
+
+    def _metric_accounting(self) -> Dict[str, Any] | None:
+        if not self.prototype_lda_enabled:
+            return None
+        common = {
+            "train_samples": int(self.net.lda_counts.sum().item()),
+            "within_class_degrees": int(self.net.lda_degrees.item()),
+            "test_time_adaptation": False,
+        }
+        if self.mode == "empirical_lda":
+            return {
+                "metric": "normalized_empirical_pooled_lda",
+                "fit_data": "current_task_train_only",
+                "covariance_solver": "hermitian_pseudoinverse",
+                "shrinkage": 0.0,
+                **common,
+            }
+        return {
+            "metric": "oas_shrinkage_lda",
+            "oas_shrinkage": float(self.net.lda_shrinkage.item()),
+            **common,
         }
 
     def get_checkpoint_state(self) -> Dict[str, Any]:

@@ -354,7 +354,7 @@ epoch loop and fit only train-split sufficient statistics at each task boundary.
 ## ATLAS-v3 ACL transport suite
 
 `atlas_v3_acl` adapts the full FEATHER slide encoder for one current-task epoch
-and then freezes it again. The paper registry contains four settings: ACL+NCM,
+and then freezes it again. The paper registry contains four core settings: ACL+NCM,
 ACL+static normalized OAS-LDA, ACL+ungated low-rank transport, and the primary
 ACL+coverage/bootstrap-gated low-rank transport method. No setting uses
 historical negatives, replay, or retained old WSI embeddings.
@@ -375,6 +375,21 @@ OAS-LDA stores only per-class counts, means, and scatters. Transport fitting
 pairs are current-task-only transient tensors and are cleared before task
 checkpoints.
 
+The same registry also contains rank-2, rank-4, and rank-16 controls. Rank 8 is
+the primary setting, so its completed folds are reused by the dedicated job:
+
+```bash
+sbatch scripts/FEATHER/atlasV3_transport_rank.sh
+```
+
+The ACL-epoch job keeps every primary-method option fixed and runs the 2-, 3-,
+and 4-epoch extensions. The existing primary result remains the 1-epoch
+reference:
+
+```bash
+sbatch scripts/FEATHER/atlasV3_acl_epochs.sh
+```
+
 Old training splits may be reopened only by the explicitly offline oracle audit;
 its output is never consumed by training or model selection:
 
@@ -383,6 +398,58 @@ python scripts/audit_atlas_v3_acl_transport.py \
   --exp-desc ablations/atlas_v3_acl/atlasv3_acl_gated_transport_normalized_oas_no_histneg/fold_0 \
   --fold 0 --after-task 9
 ```
+
+The paired transport-correction diagnostic jointly compares static, ungated,
+and adaptive-gated checkpoints against oracle old-train statistics. It verifies
+that their encoders are bitwise identical before reporting prototype recovery,
+direction alignment, over-correction, and covariance residuals:
+
+```bash
+# Full 10-fold, task-1-through-task-9 offline diagnostic.
+sbatch scripts/FEATHER/atlasV3_transport_oracle_diagnostic.sh
+
+# Small final-checkpoint pilot.
+FOLDS=0 AFTER_TASKS=9 \
+  sbatch scripts/FEATHER/atlasV3_transport_oracle_diagnostic.sh
+```
+
+The aggregated diagnostic is written under
+`results/diagnostics/atlas_v3_transport_correction/summary/`.
+
+The four-method paper visualization (joint t-SNE plus FEATHER patch-embedding
+Grad-CAM) can be generated from final fold-0 checkpoints with:
+
+```bash
+
+sbatch scripts/FEATHER/atlasV3_visualizations.sh
+```
+
+By default, t-SNE covers representative tasks 0, 1, 2, and 9, while Grad-CAM
+uses the old task-0 test slide `patient_125_node_0` at the final checkpoint.
+Outputs are written to `results/visualizations/atlas_v3/fold_0_task_9/`.
+
+Grad-CAM needs the matching feature H5 (features plus level-0 patch coordinates)
+and an image background. The background may be a prepared thumbnail or the exact
+original WSI; an SVS pyramid level is read directly without decoding the full slide:
+
+```bash
+HEATMAP_TASK=1 \
+SLIDE_ID=TCGA-BH-A202-01Z-00-DX1.8CECDB74-5E6F-4CE8-B52C-A89E574F38FB \
+WSI=/datastore/uittogether/LuuTru/Thuchd/Research/data_raw_BRCA_LUSC_RCC/TCGA-BH-A202-01Z-00-DX1.8CECDB74-5E6F-4CE8-B52C-A89E574F38FB.svs \
+sbatch scripts/FEATHER/atlasV3_visualizations.sh
+```
+
+The two-panel representation-drift diagnostic (frozen-vs-ACL feature drift and
+static-vs-full-vs-adaptive-gated oracle prototype mismatch) is generated with:
+
+```bash
+sbatch scripts/FEATHER/atlasV3_drift_forgetting_figures.sh
+```
+
+This job completes any missing transport-oracle CSV files, measures cosine
+drift on fixed old-task test WSI in the original normalized embedding space,
+and writes the figure and analysis tables under
+`results/diagnostics/atlas_v3_drift_forgetting/figures_drift_transport/`.
 
 ## Updates / TODOs
 Please follow this GitHub for more updates.

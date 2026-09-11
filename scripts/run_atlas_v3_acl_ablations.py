@@ -19,7 +19,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.atlas_v3_acl_registry import SETTING_IDS, load_registry, select_variants
+from scripts.atlas_v3_acl_registry import (
+    EXPECTED_EPOCHS,
+    FULL_RANK_IDS,
+    SETTING_IDS,
+    load_registry,
+    select_variants,
+)
 
 
 OAS_DIAGNOSTIC_SEMANTICS = {
@@ -27,6 +33,9 @@ OAS_DIAGNOSTIC_SEMANTICS = {
     "transport_normalized_oas": "acl_only_normalized_oas_ungated_lowrank_transport_v1",
     "gated_transport_normalized_oas_no_histneg": "acl_only_normalized_oas_gated_lowrank_transport_v1",
 }
+FULL_RANK_DIAGNOSTIC_SEMANTICS = (
+    "acl_only_normalized_oas_gated_full_ridge_transport_v1"
+)
 
 
 def parse_folds(value: str) -> list[int]:
@@ -96,8 +105,10 @@ def validate_command(command: Sequence[str]) -> None:
 
 def resolved_audit(variant: Dict[str, Any], fold: int) -> str:
     mode = variant["overrides"]["atlasv3_acl_mode"]
+    epochs = int(variant["overrides"].get("n_epochs", 1))
+    adaptation = "NONE" if epochs == 0 else f"ACL-{epochs}-EPOCH"
     return (
-        f"variant={variant['id']} fold={int(fold)} FEATHER=ACL-ADAPTED "
+        f"variant={variant['id']} fold={int(fold)} FEATHER={adaptation} "
         f"Mode={mode} Replay=NONE OldData=NONE HistNeg=NONE LoRA=NONE"
     )
 
@@ -124,8 +135,16 @@ def inspect_run(registry: Dict[str, Any], variant: Dict[str, Any], fold: int) ->
     saved_mode = manifest.get("atlas_v3_acl_config", {}).get("mode")
     if saved_mode != variant["overrides"]["atlasv3_acl_mode"]:
         return "mismatch"
+    expected_epochs = int(EXPECTED_EPOCHS.get(variant["id"], 1))
+    saved_epochs = manifest.get("resolved_config", {}).get("n_epochs")
+    if saved_epochs is None or int(saved_epochs) != expected_epochs:
+        return "mismatch"
     mode = variant["overrides"]["atlasv3_acl_mode"]
-    expected_semantics = OAS_DIAGNOSTIC_SEMANTICS.get(mode)
+    expected_semantics = (
+        FULL_RANK_DIAGNOSTIC_SEMANTICS
+        if variant["id"] in FULL_RANK_IDS
+        else OAS_DIAGNOSTIC_SEMANTICS.get(mode)
+    )
     saved_semantics = manifest.get("atlas_v3_acl_config", {}).get(
         "implementation_semantics"
     )

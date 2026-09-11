@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=atlasV3Frozen
-#SBATCH --output=logs/FEATHER/atlasV3Frozen_%j.out
-#SBATCH --error=logs/FEATHER/atlasV3Frozen_%j.err
+#SBATCH --job-name=atlasV3Rank
+#SBATCH --output=logs/FEATHER/atlasV3Rank_%j.out
+#SBATCH --error=logs/FEATHER/atlasV3Rank_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -11,16 +11,17 @@
 
 set -eo pipefail
 
-REQUIRED_VRAM="${REQUIRED_VRAM:-8000}"
+REQUIRED_VRAM="${REQUIRED_VRAM:-10000}"
 MAX_RETRIES="${MAX_RETRIES:-5}"
 ACTION="${ACTION:-resume}"
-RERUN_INCOMPLETE="${RERUN_INCOMPLETE:-0}"
+RERUN_INCOMPLETE="${RERUN_INCOMPLETE:-1}"
 FOLDS="${FOLDS:-all}"
 REPO_ROOT=/datastore/uittogether/LuuTru/Thuchd/benchmarkWSI/version_moi/Benchmark-WSI/
 VARIANTS=(
-    #atlasv3_frozen_proto
-    atlasv3_frozen_proto_empirical_lda
-    #atlasv3_frozen_proto_oas_lda
+    atlasv3_acl_gated_transport_normalized_oas_no_histneg_r2
+    atlasv3_acl_gated_transport_normalized_oas_no_histneg_r4
+    atlasv3_acl_gated_transport_normalized_oas_no_histneg
+    atlasv3_acl_gated_transport_normalized_oas_no_histneg_r16
 )
 
 if [[ "$ACTION" != "run" && "$ACTION" != "resume" ]]; then
@@ -115,11 +116,10 @@ echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 echo "ACTION=$ACTION"
 echo "VARIANTS=${VARIANTS[*]}"
 echo "FOLDS=$FOLDS"
-echo "MODE=FROZEN_STATISTICS_ONLY"
 nvidia-smi -i "$BEST_GPU"
 
 RUN_COMMAND=(
-    python -u scripts/run_atlas_v3_ablations.py
+    python -u scripts/run_atlas_v3_acl_ablations.py
     "$ACTION"
     --variants "${VARIANTS[@]}"
     --folds "$FOLDS"
@@ -129,4 +129,9 @@ if [[ "$ACTION" == "resume" && "$RERUN_INCOMPLETE" == "1" ]]; then
 fi
 "${RUN_COMMAND[@]}"
 
-echo "Hoan thanh ATLAS-v3 frozen prototype baselines."
+python -u scripts/summarize_atlas_v3_acl_ablations.py \
+    --variants "${VARIANTS[@]}" \
+    --output results/ablations/atlas_v3_acl/summary_transport_rank \
+    --percent
+
+echo "Hoan thanh ATLAS-v3 transport-rank ablation."

@@ -2,7 +2,7 @@ defaults:
   config: configs/methods.yaml
   backbone: feather
   result_root: ablations/atlas_v3
-  expected_variants: 2
+  expected_variants: 3
 
 variants:
   atlasv3_frozen_proto:
@@ -14,6 +14,16 @@ variants:
     value: prototype
     overrides:
       atlasv3_distribution_mode: prototype
+
+  atlasv3_frozen_proto_empirical_lda:
+    id: atlasv3_frozen_proto_empirical_lda
+    group: paper_baseline
+    model: atlas_v3
+    label: Frozen FEATHER with train-only normalized empirical pooled LDA
+    factor: classifier
+    value: normalized_empirical_lda
+    overrides:
+      atlasv3_distribution_mode: empirical_lda
 
   atlasv3_frozen_proto_oas_lda:
     id: atlasv3_frozen_proto_oas_lda

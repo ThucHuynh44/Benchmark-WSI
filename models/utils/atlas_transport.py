@@ -98,6 +98,42 @@ def fit_lowrank_residual(
     return ResidualTransport(matrix, delta, source_mean, target_mean, effective, diagnostics)
 
 
+def fit_full_residual(
+    source: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    ridge: float,
+) -> ResidualTransport:
+    """Fit the complete centered ridge residual without SVD truncation."""
+
+    source, target = _pairs(source, target)
+    dimensions = source.shape[1]
+    source_mean = source.mean(0, keepdim=True)
+    target_mean = target.mean(0, keepdim=True)
+    centered = source - source_mean
+    residual = (target - target_mean) - centered
+    identity = torch.eye(dimensions, device=source.device, dtype=source.dtype)
+    scale = float(source.shape[0])
+    lhs = centered.t() @ centered / scale + float(ridge) * identity
+    rhs = centered.t() @ residual / scale
+    delta = torch.linalg.solve(lhs, rhs)
+    singular = torch.linalg.svdvals(delta)
+    tolerance = (
+        torch.finfo(singular.dtype).eps
+        * max(delta.shape)
+        * singular[0].clamp_min(1.0)
+    )
+    effective = int((singular > tolerance).sum())
+    matrix = identity + delta
+    prediction = source + (source - source_mean) @ delta + target_mean - source_mean
+    diagnostics = _matrix_diagnostics(matrix, source, target)
+    diagnostics["pair_train_mse"] = float(F.mse_loss(prediction, target))
+    diagnostics["effective_rank"] = float(effective)
+    return ResidualTransport(
+        matrix, delta, source_mean, target_mean, effective, diagnostics
+    )
+
+
 def support_basis(values: torch.Tensor, *, energy: float) -> torch.Tensor:
     values = values.detach().float().reshape(values.shape[0], -1)
     centered = values - values.mean(0, keepdim=True)
@@ -149,6 +185,7 @@ def bootstrap_gates(
     samples: int,
     beta: float,
     seed: int,
+    full_rank: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, Dict[str, float | str]]:
     """Estimate WSI-level map disagreement and return conservative step gates."""
 
@@ -168,7 +205,14 @@ def bootstrap_gates(
     for _ in range(int(samples)):
         indices_cpu = torch.randint(n, (n,), generator=generator)
         indices = indices_cpu.to(source.device)
-        fitted = fit_lowrank_residual(source[indices], target[indices], rank=rank, ridge=ridge)
+        if full_rank:
+            fitted = fit_full_residual(
+                source[indices], target[indices], ridge=ridge
+            )
+        else:
+            fitted = fit_lowrank_residual(
+                source[indices], target[indices], rank=rank, ridge=ridge
+            )
         mapped = F.normalize(fitted.map(points), dim=1, eps=1.0e-8)
         disagreements.append(1.0 - (mapped * mapped_main).sum(1).clamp(-1.0, 1.0))
         selected = torch.zeros(n, dtype=torch.bool)

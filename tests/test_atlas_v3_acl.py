@@ -19,9 +19,17 @@ from models.atlas_v3_acl import (
 from models.utils.atlas_transport import (
     bootstrap_gates,
     distribution_coverage,
+    fit_full_residual,
     fit_lowrank_residual,
 )
-from scripts.atlas_v3_acl_registry import EXPECTED_MODES, SETTING_IDS, load_registry
+from scripts.atlas_v3_acl_registry import (
+    EXPECTED_EPOCHS,
+    EXPECTED_MODES,
+    EXPECTED_RANKS,
+    FULL_RANK_IDS,
+    SETTING_IDS,
+    load_registry,
+)
 from scripts.run_atlas_v3_acl_ablations import build_command
 
 
@@ -64,6 +72,7 @@ def args(**overrides):
         task_order=["brca", "nsclc"], seed=5, fold=1,
         atlasv3_acl_mode="acl", atlasv3_acl_temperature=0.1,
         atlasv3_acl_transport_rank=2, atlasv3_acl_transport_ridge=1e-3,
+        atlasv3_acl_transport_full_rank=False,
         atlasv3_acl_transport_mean_scale=1.0,
         atlasv3_acl_transport_cov_scale=1.0,
         atlasv3_acl_coverage_energy=0.95,
@@ -137,12 +146,18 @@ def learn_task(model, task):
 
 
 class AtlasV3ACLRegistryTests(unittest.TestCase):
-    def test_registry_has_exactly_four_paper_settings(self):
+    def test_registry_has_core_and_rank_ablation_settings(self):
         registry = load_registry(REGISTRY)
         self.assertEqual(tuple(registry["variants"]), SETTING_IDS)
-        self.assertEqual(len(SETTING_IDS), 4)
+        self.assertEqual(len(SETTING_IDS), 17)
         for variant_id, variant in registry["variants"].items():
             expected = {"atlasv3_acl_mode": EXPECTED_MODES[variant_id]}
+            if variant_id in EXPECTED_RANKS:
+                expected["atlasv3_acl_transport_rank"] = EXPECTED_RANKS[variant_id]
+            if variant_id in FULL_RANK_IDS:
+                expected["atlasv3_acl_transport_full_rank"] = True
+            if variant_id in EXPECTED_EPOCHS:
+                expected["n_epochs"] = EXPECTED_EPOCHS[variant_id]
             self.assertEqual(variant["overrides"], expected)
             command = build_command(registry, variant, 2)
             self.assertIn("atlas_v3_acl", command)
@@ -165,6 +180,18 @@ class TransportTests(unittest.TestCase):
         fitted = fit_lowrank_residual(source, target, rank=2, ridge=1e-6)
         self.assertLessEqual(fitted.effective_rank, 2)
         self.assertLess(F.mse_loss(fitted.map(source), target).item(), 1e-5)
+
+    def test_full_fit_keeps_complete_ridge_residual(self):
+        torch.manual_seed(14)
+        source = torch.randn(20, 6)
+        target = source @ (torch.eye(6) + 0.03 * torch.randn(6, 6))
+        lowrank = fit_lowrank_residual(source, target, rank=2, ridge=1e-6)
+        full = fit_full_residual(source, target, ridge=1e-6)
+        self.assertGreater(full.effective_rank, lowrank.effective_rank)
+        self.assertLessEqual(
+            F.mse_loss(full.map(source), target),
+            F.mse_loss(lowrank.map(source), target),
+        )
 
     def test_coverage_and_bootstrap_are_deterministic(self):
         torch.manual_seed(9)
@@ -196,6 +223,20 @@ class AtlasV3ACLTests(unittest.TestCase):
         model.end_task(dataset)
         self.assertTrue(all(not parameter.requires_grad for parameter in model.net.backbone.parameters()))
         self.assertIsNone(model._pair_pre_raw)
+
+    def test_zero_acl_epochs_is_a_true_frozen_encoder_control(self):
+        model = build(args(
+            n_epochs=0,
+            atlasv3_acl_mode="gated_transport_normalized_oas_no_histneg",
+        ))
+        before = copy.deepcopy(model.net.backbone.state_dict())
+        dataset = learn_task(model, 0)
+        self.assertTrue(model.TRAINING_FREE)
+        self.assertTrue(all(not parameter.requires_grad for parameter in model.net.backbone.parameters()))
+        for name, value in model.net.backbone.state_dict().items():
+            self.assertTrue(torch.equal(value, before[name]))
+        self.assertTrue(bool(model.net.lda_fitted))
+        self.assertEqual(model.transport_history[-1]["effective_rank"], 0.0)
 
     def test_all_modes_complete_two_tasks_with_finite_logits(self):
         for mode in ACL_MODES:
@@ -254,6 +295,21 @@ class AtlasV3ACLTests(unittest.TestCase):
             "normalized_oas_static", "transport_normalized_oas",
             "gated_transport_normalized_oas_no_histneg",
         })
+
+    def test_full_rank_setting_uses_untruncated_transport_end_to_end(self):
+        model = build(args(
+            atlasv3_acl_mode="gated_transport_normalized_oas_no_histneg",
+            atlasv3_acl_transport_full_rank=True,
+        ))
+        learn_task(model, 0)
+        learn_task(model, 1)
+        row = model.transport_history[-1]
+        self.assertEqual(row["requested_rank"], "full")
+        self.assertGreater(row["effective_rank"], 0.0)
+        self.assertEqual(
+            model.get_run_metadata()["atlas_v3_acl_config"]["implementation_semantics"],
+            "acl_only_normalized_oas_gated_full_ridge_transport_v1",
+        )
 
     def test_normalized_oas_transport_controls_exclude_histneg(self):
         for mode, gated in (

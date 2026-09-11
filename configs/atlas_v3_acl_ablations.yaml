@@ -2,9 +2,18 @@ defaults:
   config: configs/methods.yaml
   backbone: feather
   result_root: ablations/atlas_v3_acl
-  expected_variants: 4
+  expected_variants: 17
 
 variants:
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_e0:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_e0
+    group: acl_epochs_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with 0 ACL epochs
+    factor: acl_epochs
+    value: 0
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, n_epochs: 0}
+
   atlasv3_acl:
     id: atlasv3_acl
     group: paper_ablation
@@ -32,6 +41,24 @@ variants:
     value: ungated_transport
     overrides: {atlasv3_acl_mode: transport_normalized_oas}
 
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_r2:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_r2
+    group: transport_rank_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with rank 2
+    factor: transport_rank
+    value: 2
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, atlasv3_acl_transport_rank: 2}
+
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_r4:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_r4
+    group: transport_rank_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with rank 4
+    factor: transport_rank
+    value: 4
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, atlasv3_acl_transport_rank: 4}
+
   atlasv3_acl_gated_transport_normalized_oas_no_histneg:
     id: atlasv3_acl_gated_transport_normalized_oas_no_histneg
     group: paper_ablation
@@ -40,3 +67,93 @@ variants:
     factor: historical_statistics
     value: gated_transport
     overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg}
+
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_r16:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_r16
+    group: transport_rank_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with rank 16
+    factor: transport_rank
+    value: 16
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, atlasv3_acl_transport_rank: 16}
+
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_r32:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_r32
+    group: transport_rank_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with rank 32
+    factor: transport_rank
+    value: 32
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, atlasv3_acl_transport_rank: 32}
+
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_r64:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_r64
+    group: transport_rank_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with rank 64
+    factor: transport_rank
+    value: 64
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, atlasv3_acl_transport_rank: 64}
+
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_r128:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_r128
+    group: transport_rank_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with rank 128
+    factor: transport_rank
+    value: 128
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, atlasv3_acl_transport_rank: 128}
+
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_r256:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_r256
+    group: transport_rank_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with rank 256
+    factor: transport_rank
+    value: 256
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, atlasv3_acl_transport_rank: 256}
+
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_r384:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_r384
+    group: transport_rank_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with maximal rank 384
+    factor: transport_rank
+    value: 384
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, atlasv3_acl_transport_rank: 384}
+
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_fullrank:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_fullrank
+    group: transport_rank_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with untruncated full ridge residual
+    factor: transport_rank
+    value: full
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, atlasv3_acl_transport_full_rank: true}
+
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_e2:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_e2
+    group: acl_epochs_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with 2 ACL epochs
+    factor: acl_epochs
+    value: 2
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, n_epochs: 2}
+
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_e3:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_e3
+    group: acl_epochs_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with 3 ACL epochs
+    factor: acl_epochs
+    value: 3
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, n_epochs: 3}
+
+  atlasv3_acl_gated_transport_normalized_oas_no_histneg_e4:
+    id: atlasv3_acl_gated_transport_normalized_oas_no_histneg_e4
+    group: acl_epochs_ablation
+    model: atlas_v3_acl
+    label: Gated normalized OAS transport with 4 ACL epochs
+    factor: acl_epochs
+    value: 4
+    overrides: {atlasv3_acl_mode: gated_transport_normalized_oas_no_histneg, n_epochs: 4}

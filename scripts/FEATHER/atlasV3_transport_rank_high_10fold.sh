@@ -1,7 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=atlasV3Frozen
-#SBATCH --output=logs/FEATHER/atlasV3Frozen_%j.out
-#SBATCH --error=logs/FEATHER/atlasV3Frozen_%j.err
+#SBATCH --job-name=atlasV3RankHigh
+#SBATCH --output=logs/FEATHER/atlasV3RankHigh_%A_%a.out
+#SBATCH --error=logs/FEATHER/atlasV3RankHigh_%A_%a.err
+#SBATCH --array=0-4
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -11,17 +12,42 @@
 
 set -eo pipefail
 
-REQUIRED_VRAM="${REQUIRED_VRAM:-8000}"
+REQUIRED_VRAM="${REQUIRED_VRAM:-10000}"
 MAX_RETRIES="${MAX_RETRIES:-5}"
 ACTION="${ACTION:-resume}"
-RERUN_INCOMPLETE="${RERUN_INCOMPLETE:-0}"
+RERUN_INCOMPLETE="${RERUN_INCOMPLETE:-1}"
 FOLDS="${FOLDS:-all}"
 REPO_ROOT=/datastore/uittogether/LuuTru/Thuchd/benchmarkWSI/version_moi/Benchmark-WSI/
-VARIANTS=(
-    #atlasv3_frozen_proto
-    atlasv3_frozen_proto_empirical_lda
-    #atlasv3_frozen_proto_oas_lda
-)
+TARGETS=(rank32 rank64 rank128 rank256 fullrank)
+
+ARRAY_INDEX="${SLURM_ARRAY_TASK_ID:-0}"
+if ! [[ "$ARRAY_INDEX" =~ ^[0-4]$ ]]; then
+    echo "ERROR: SLURM_ARRAY_TASK_ID must be in 0..4; got '$ARRAY_INDEX'." >&2
+    exit 2
+fi
+TARGET="${TARGET:-${TARGETS[$ARRAY_INDEX]}}"
+
+case "$TARGET" in
+    rank32)
+        VARIANT=atlasv3_acl_gated_transport_normalized_oas_no_histneg_r32
+        ;;
+    rank64)
+        VARIANT=atlasv3_acl_gated_transport_normalized_oas_no_histneg_r64
+        ;;
+    rank128)
+        VARIANT=atlasv3_acl_gated_transport_normalized_oas_no_histneg_r128
+        ;;
+    rank256)
+        VARIANT=atlasv3_acl_gated_transport_normalized_oas_no_histneg_r256
+        ;;
+    fullrank)
+        VARIANT=atlasv3_acl_gated_transport_normalized_oas_no_histneg_fullrank
+        ;;
+    *)
+        echo "ERROR: TARGET must be rank32, rank64, rank128, rank256, or fullrank; got '$TARGET'." >&2
+        exit 2
+        ;;
+esac
 
 if [[ "$ACTION" != "run" && "$ACTION" != "resume" ]]; then
     echo "ERROR: ACTION must be run or resume; got '$ACTION'." >&2
@@ -111,17 +137,15 @@ trap cleanup EXIT
 
 echo "HOSTNAME=$(hostname)"
 echo "SLURM_JOB_ID=$SLURM_JOB_ID"
+echo "SLURM_ARRAY_TASK_ID=$ARRAY_INDEX"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
-echo "ACTION=$ACTION"
-echo "VARIANTS=${VARIANTS[*]}"
-echo "FOLDS=$FOLDS"
-echo "MODE=FROZEN_STATISTICS_ONLY"
+echo "TARGET=$TARGET VARIANT=$VARIANT FOLDS=$FOLDS ACTION=$ACTION"
 nvidia-smi -i "$BEST_GPU"
 
 RUN_COMMAND=(
-    python -u scripts/run_atlas_v3_ablations.py
+    python -u scripts/run_atlas_v3_acl_ablations.py
     "$ACTION"
-    --variants "${VARIANTS[@]}"
+    --variants "$VARIANT"
     --folds "$FOLDS"
 )
 if [[ "$ACTION" == "resume" && "$RERUN_INCOMPLETE" == "1" ]]; then
@@ -129,4 +153,9 @@ if [[ "$ACTION" == "resume" && "$RERUN_INCOMPLETE" == "1" ]]; then
 fi
 "${RUN_COMMAND[@]}"
 
-echo "Hoan thanh ATLAS-v3 frozen prototype baselines."
+python -u scripts/summarize_atlas_v3_acl_ablations.py \
+    --variants "$VARIANT" \
+    --output "results/ablations/atlas_v3_acl/summary_transport_rank_high/${TARGET}" \
+    --percent
+
+echo "Hoan thanh $TARGET: $VARIANT, folds=$FOLDS"

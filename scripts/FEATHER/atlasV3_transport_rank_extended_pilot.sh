@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=atlasV3Frozen
-#SBATCH --output=logs/FEATHER/atlasV3Frozen_%j.out
-#SBATCH --error=logs/FEATHER/atlasV3Frozen_%j.err
+#SBATCH --job-name=atlasV3RankExt
+#SBATCH --output=logs/FEATHER/atlasV3RankExt_%j.out
+#SBATCH --error=logs/FEATHER/atlasV3RankExt_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -11,22 +11,42 @@
 
 set -eo pipefail
 
-REQUIRED_VRAM="${REQUIRED_VRAM:-8000}"
+REQUIRED_VRAM="${REQUIRED_VRAM:-10000}"
 MAX_RETRIES="${MAX_RETRIES:-5}"
 ACTION="${ACTION:-resume}"
-RERUN_INCOMPLETE="${RERUN_INCOMPLETE:-0}"
-FOLDS="${FOLDS:-all}"
+RERUN_INCOMPLETE="${RERUN_INCOMPLETE:-1}"
+TARGET="${TARGET:-rank32}"
+FOLDS="${FOLDS:-}"
 REPO_ROOT=/datastore/uittogether/LuuTru/Thuchd/benchmarkWSI/version_moi/Benchmark-WSI/
-VARIANTS=(
-    #atlasv3_frozen_proto
-    atlasv3_frozen_proto_empirical_lda
-    #atlasv3_frozen_proto_oas_lda
-)
+
+case "$TARGET" in
+    rank32)
+        VARIANT=atlasv3_acl_gated_transport_normalized_oas_no_histneg_r32
+        FOLDS="${FOLDS:-0,1,2}"
+        ;;
+    maxrank)
+        VARIANT=atlasv3_acl_gated_transport_normalized_oas_no_histneg_r384
+        FOLDS="${FOLDS:-0}"
+        ;;
+    *)
+        echo "ERROR: TARGET must be rank32 or maxrank; got '$TARGET'." >&2
+        exit 2
+        ;;
+esac
 
 if [[ "$ACTION" != "run" && "$ACTION" != "resume" ]]; then
     echo "ERROR: ACTION must be run or resume; got '$ACTION'." >&2
     exit 2
 fi
+
+SUMMARY_VARIANTS=(
+    atlasv3_acl_gated_transport_normalized_oas_no_histneg_r2
+    atlasv3_acl_gated_transport_normalized_oas_no_histneg_r4
+    atlasv3_acl_gated_transport_normalized_oas_no_histneg
+    atlasv3_acl_gated_transport_normalized_oas_no_histneg_r16
+    atlasv3_acl_gated_transport_normalized_oas_no_histneg_r32
+    atlasv3_acl_gated_transport_normalized_oas_no_histneg_r384
+)
 
 mkdir -p "$REPO_ROOT/logs/FEATHER"
 module clear -f
@@ -112,16 +132,13 @@ trap cleanup EXIT
 echo "HOSTNAME=$(hostname)"
 echo "SLURM_JOB_ID=$SLURM_JOB_ID"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
-echo "ACTION=$ACTION"
-echo "VARIANTS=${VARIANTS[*]}"
-echo "FOLDS=$FOLDS"
-echo "MODE=FROZEN_STATISTICS_ONLY"
+echo "TARGET=$TARGET VARIANT=$VARIANT FOLDS=$FOLDS ACTION=$ACTION"
 nvidia-smi -i "$BEST_GPU"
 
 RUN_COMMAND=(
-    python -u scripts/run_atlas_v3_ablations.py
+    python -u scripts/run_atlas_v3_acl_ablations.py
     "$ACTION"
-    --variants "${VARIANTS[@]}"
+    --variants "$VARIANT"
     --folds "$FOLDS"
 )
 if [[ "$ACTION" == "resume" && "$RERUN_INCOMPLETE" == "1" ]]; then
@@ -129,4 +146,9 @@ if [[ "$ACTION" == "resume" && "$RERUN_INCOMPLETE" == "1" ]]; then
 fi
 "${RUN_COMMAND[@]}"
 
-echo "Hoan thanh ATLAS-v3 frozen prototype baselines."
+python -u scripts/summarize_atlas_v3_acl_ablations.py \
+    --variants "${SUMMARY_VARIANTS[@]}" \
+    --output "results/ablations/atlas_v3_acl/summary_transport_rank_extended_${TARGET}" \
+    --percent
+
+echo "Hoan thanh $TARGET: $VARIANT, folds=$FOLDS"

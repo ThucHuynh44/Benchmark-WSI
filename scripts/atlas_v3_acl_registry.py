@@ -13,17 +13,65 @@ from configs.experiment_loader import load_experiment_config
 
 
 SETTING_IDS = (
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_e0",
     "atlasv3_acl",
     "atlasv3_acl_normalized_oas_static",
     "atlasv3_acl_transport_normalized_oas",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r2",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r4",
     "atlasv3_acl_gated_transport_normalized_oas_no_histneg",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r16",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r32",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r64",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r128",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r256",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r384",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_fullrank",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_e2",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_e3",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_e4",
 )
 
 EXPECTED_MODES = {
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_e0": "gated_transport_normalized_oas_no_histneg",
     "atlasv3_acl": "acl",
     "atlasv3_acl_normalized_oas_static": "normalized_oas_static",
     "atlasv3_acl_transport_normalized_oas": "transport_normalized_oas",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r2": "gated_transport_normalized_oas_no_histneg",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r4": "gated_transport_normalized_oas_no_histneg",
     "atlasv3_acl_gated_transport_normalized_oas_no_histneg": "gated_transport_normalized_oas_no_histneg",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r16": "gated_transport_normalized_oas_no_histneg",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r32": "gated_transport_normalized_oas_no_histneg",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r64": "gated_transport_normalized_oas_no_histneg",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r128": "gated_transport_normalized_oas_no_histneg",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r256": "gated_transport_normalized_oas_no_histneg",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r384": "gated_transport_normalized_oas_no_histneg",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_fullrank": "gated_transport_normalized_oas_no_histneg",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_e2": "gated_transport_normalized_oas_no_histneg",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_e3": "gated_transport_normalized_oas_no_histneg",
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_e4": "gated_transport_normalized_oas_no_histneg",
+}
+
+EXPECTED_RANKS = {
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r2": 2,
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r4": 4,
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r16": 16,
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r32": 32,
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r64": 64,
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r128": 128,
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r256": 256,
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_r384": 384,
+}
+
+FULL_RANK_IDS = {
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_fullrank",
+}
+
+EXPECTED_EPOCHS = {
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_e0": 0,
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_e2": 2,
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_e3": 3,
+    "atlasv3_acl_gated_transport_normalized_oas_no_histneg_e4": 4,
 }
 
 
@@ -57,6 +105,12 @@ def load_registry(path: str | Path) -> Dict[str, Any]:
         if entry["id"] != variant_id or entry["model"] != "atlas_v3_acl":
             raise ValueError(f"ATLAS-v3 ACL identity mismatch for {variant_id}")
         expected = {"atlasv3_acl_mode": EXPECTED_MODES[variant_id]}
+        if variant_id in EXPECTED_RANKS:
+            expected["atlasv3_acl_transport_rank"] = EXPECTED_RANKS[variant_id]
+        if variant_id in FULL_RANK_IDS:
+            expected["atlasv3_acl_transport_full_rank"] = True
+        if variant_id in EXPECTED_EPOCHS:
+            expected["n_epochs"] = EXPECTED_EPOCHS[variant_id]
         if entry["overrides"] != expected:
             raise ValueError(f"{variant_id} must only select {expected!r}")
         resolved = load_experiment_config(str(config_path), method="atlas_v3_acl", backbone="feather")
