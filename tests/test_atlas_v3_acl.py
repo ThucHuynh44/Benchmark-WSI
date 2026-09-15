@@ -12,8 +12,10 @@ from torch.utils.data import DataLoader, Dataset
 
 from models.atlas_v3_acl import (
     ACL_MODES,
+    COVERAGE_ONLY_MODES,
     NORMALIZED_OAS_MODES,
     OAS_MODES,
+    UNCERTAINTY_ONLY_MODES,
     build_model_from_components,
 )
 from models.utils.atlas_transport import (
@@ -149,7 +151,7 @@ class AtlasV3ACLRegistryTests(unittest.TestCase):
     def test_registry_has_core_and_rank_ablation_settings(self):
         registry = load_registry(REGISTRY)
         self.assertEqual(tuple(registry["variants"]), SETTING_IDS)
-        self.assertEqual(len(SETTING_IDS), 17)
+        self.assertEqual(len(SETTING_IDS), 19)
         for variant_id, variant in registry["variants"].items():
             expected = {"atlasv3_acl_mode": EXPECTED_MODES[variant_id]}
             if variant_id in EXPECTED_RANKS:
@@ -293,8 +295,50 @@ class AtlasV3ACLTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(model.net.raw_mean[:4]).all())
         self.assertEqual(NORMALIZED_OAS_MODES, {
             "normalized_oas_static", "transport_normalized_oas",
+            "coverage_only_transport_normalized_oas_no_histneg",
+            "uncertainty_only_transport_normalized_oas_no_histneg",
             "gated_transport_normalized_oas_no_histneg",
         })
+
+    def test_coverage_only_gate_does_not_run_bootstrap(self):
+        mode = next(iter(COVERAGE_ONLY_MODES))
+        model = build(args(atlasv3_acl_mode=mode))
+        learn_task(model, 0)
+        expected = torch.tensor([0.25, 0.75])
+        with patch(
+            "models.atlas_v3_acl.distribution_coverage",
+            return_value=expected,
+        ), patch("models.atlas_v3_acl.bootstrap_gates") as bootstrap:
+            learn_task(model, 1)
+        bootstrap.assert_not_called()
+        row = model.transport_history[-1]
+        self.assertEqual(row["bootstrap_status"], "disabled_coverage_only")
+        self.assertTrue(torch.allclose(model.net.last_step_gate[:2], expected))
+
+    def test_uncertainty_only_gate_uses_unit_coverage_and_skips_coverage_estimator(self):
+        mode = next(iter(UNCERTAINTY_ONLY_MODES))
+        model = build(args(atlasv3_acl_mode=mode))
+        learn_task(model, 0)
+        expected_gates = torch.tensor([0.6, 0.8])
+        expected_uncertainty = torch.tensor([0.05, 0.02])
+
+        def fake_bootstrap(points, source, target, coverage, main, **kwargs):
+            self.assertTrue(torch.equal(coverage, torch.ones_like(coverage)))
+            return expected_gates, expected_uncertainty, {
+                "bootstrap_status": "ok",
+                "bootstrap_valid_oob": 6,
+                "bootstrap_oob_mse": 0.0,
+            }
+
+        with patch("models.atlas_v3_acl.distribution_coverage") as coverage_fn, patch(
+            "models.atlas_v3_acl.bootstrap_gates",
+            side_effect=fake_bootstrap,
+        ):
+            learn_task(model, 1)
+        coverage_fn.assert_not_called()
+        row = model.transport_history[-1]
+        self.assertEqual(row["coverage_status"], "disabled_uncertainty_only")
+        self.assertTrue(torch.allclose(model.net.last_step_gate[:2], expected_gates))
 
     def test_full_rank_setting_uses_untruncated_transport_end_to_end(self):
         model = build(args(
@@ -314,6 +358,8 @@ class AtlasV3ACLTests(unittest.TestCase):
     def test_normalized_oas_transport_controls_exclude_histneg(self):
         for mode, gated in (
             ("transport_normalized_oas", False),
+            ("coverage_only_transport_normalized_oas_no_histneg", True),
+            ("uncertainty_only_transport_normalized_oas_no_histneg", True),
             ("gated_transport_normalized_oas_no_histneg", True),
         ):
             with self.subTest(mode=mode):

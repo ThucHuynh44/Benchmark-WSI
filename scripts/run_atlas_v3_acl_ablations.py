@@ -31,6 +31,8 @@ from scripts.atlas_v3_acl_registry import (
 OAS_DIAGNOSTIC_SEMANTICS = {
     "normalized_oas_static": "acl_only_normalized_oas_static_no_transport_v1",
     "transport_normalized_oas": "acl_only_normalized_oas_ungated_lowrank_transport_v1",
+    "coverage_only_transport_normalized_oas_no_histneg": "acl_only_normalized_oas_coverage_only_lowrank_transport_v1",
+    "uncertainty_only_transport_normalized_oas_no_histneg": "acl_only_normalized_oas_uncertainty_only_lowrank_transport_v1",
     "gated_transport_normalized_oas_no_histneg": "acl_only_normalized_oas_gated_lowrank_transport_v1",
 }
 FULL_RANK_DIAGNOSTIC_SEMANTICS = (

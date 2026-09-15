@@ -31,22 +31,39 @@ ACL_MODES = (
     "acl",
     "normalized_oas_static",
     "transport_normalized_oas",
+    "coverage_only_transport_normalized_oas_no_histneg",
+    "uncertainty_only_transport_normalized_oas_no_histneg",
     "gated_transport_normalized_oas_no_histneg",
 )
 TRANSPORT_MODES = {
-    "transport_normalized_oas", "gated_transport_normalized_oas_no_histneg",
-}
-GATED_MODES = {
+    "transport_normalized_oas",
+    "coverage_only_transport_normalized_oas_no_histneg",
+    "uncertainty_only_transport_normalized_oas_no_histneg",
     "gated_transport_normalized_oas_no_histneg",
 }
+COVERAGE_ONLY_MODES = {
+    "coverage_only_transport_normalized_oas_no_histneg",
+}
+UNCERTAINTY_ONLY_MODES = {
+    "uncertainty_only_transport_normalized_oas_no_histneg",
+}
+COMBINED_GATED_MODES = {
+    "gated_transport_normalized_oas_no_histneg",
+}
+GATED_MODES = COVERAGE_ONLY_MODES | UNCERTAINTY_ONLY_MODES | COMBINED_GATED_MODES
 OAS_MODES = {
     "normalized_oas_static",
-    "transport_normalized_oas", "gated_transport_normalized_oas_no_histneg",
+    "transport_normalized_oas",
+    "coverage_only_transport_normalized_oas_no_histneg",
+    "uncertainty_only_transport_normalized_oas_no_histneg",
+    "gated_transport_normalized_oas_no_histneg",
 }
 NORMALIZED_OAS_MODES = OAS_MODES
 OAS_DIAGNOSTIC_SEMANTICS = {
     "normalized_oas_static": "acl_only_normalized_oas_static_no_transport_v1",
     "transport_normalized_oas": "acl_only_normalized_oas_ungated_lowrank_transport_v1",
+    "coverage_only_transport_normalized_oas_no_histneg": "acl_only_normalized_oas_coverage_only_lowrank_transport_v1",
+    "uncertainty_only_transport_normalized_oas_no_histneg": "acl_only_normalized_oas_uncertainty_only_lowrank_transport_v1",
     "gated_transport_normalized_oas_no_histneg": "acl_only_normalized_oas_gated_lowrank_transport_v1",
 }
 FULL_RANK_DIAGNOSTIC_SEMANTICS = (
@@ -374,23 +391,42 @@ class AtlasV3ACL(ContinualModel):
         row.update(main.diagnostics)
         row["requested_rank"] = "full" if full_rank else rank
         if self.mode in GATED_MODES:
-            coverage = distribution_coverage(
-                points,
-                self.net.raw_scatter[:self.old_class_count].to(device),
-                self.net.raw_count[:self.old_class_count].to(device),
-                source,
-                energy=float(self.args.atlasv3_acl_coverage_energy),
-            )
-            gates, uncertainty, bootstrap = bootstrap_gates(
-                points, source, target, coverage, main,
-                rank=rank, ridge=ridge,
-                samples=int(self.args.atlasv3_acl_bootstrap_samples),
-                beta=float(self.args.atlasv3_acl_uncertainty_beta),
-                seed=int(getattr(self.args, "seed", 0) or 0) + 1009 * int(getattr(self.args, "fold", 0) or 0) + 104729 * self.current_task,
-                full_rank=full_rank,
-            )
-            row.update(bootstrap)
-            row.update(summarize(coverage, "coverage"))
+            if self.mode in UNCERTAINTY_ONLY_MODES:
+                # A unit coverage prior removes the coverage factor exactly:
+                # alpha_c = 1 * exp(-beta * u_c).
+                coverage = torch.ones(self.old_class_count, device=device)
+                row["coverage_status"] = "disabled_uncertainty_only"
+            else:
+                coverage = distribution_coverage(
+                    points,
+                    self.net.raw_scatter[:self.old_class_count].to(device),
+                    self.net.raw_count[:self.old_class_count].to(device),
+                    source,
+                    energy=float(self.args.atlasv3_acl_coverage_energy),
+                )
+                row.update(summarize(coverage, "coverage"))
+
+            if self.mode in COVERAGE_ONLY_MODES:
+                # No bootstrap is evaluated in this ablation:
+                # alpha_c = rho_c.
+                gates = coverage
+                uncertainty = torch.full_like(coverage, torch.nan)
+                row.update({
+                    "bootstrap_status": "disabled_coverage_only",
+                    "bootstrap_valid_oob": 0,
+                    "bootstrap_oob_mse": "",
+                })
+            else:
+                gates, uncertainty, bootstrap = bootstrap_gates(
+                    points, source, target, coverage, main,
+                    rank=rank, ridge=ridge,
+                    samples=int(self.args.atlasv3_acl_bootstrap_samples),
+                    beta=float(self.args.atlasv3_acl_uncertainty_beta),
+                    seed=int(getattr(self.args, "seed", 0) or 0) + 1009 * int(getattr(self.args, "fold", 0) or 0) + 104729 * self.current_task,
+                    full_rank=full_rank,
+                )
+                row.update(bootstrap)
+
             row.update(summarize(gates, "step_gate"))
             row.update(summarize(uncertainty, "bootstrap_uncertainty"))
             self.net.last_coverage[:self.old_class_count].copy_(coverage.to(self.net.last_coverage))
