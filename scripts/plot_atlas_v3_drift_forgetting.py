@@ -26,19 +26,19 @@ OUTPUT_ROOT = REPO_ROOT / "results/diagnostics/atlas_v3_drift_forgetting/figures
 METHODS = {
     "static": {
         "setting": "atlasv3_acl_normalized_oas_static",
-        "title": "ACL + static OAS",
+        "title": "ACL w/o transport",
         "color": "#D55E00",
         "marker": "o",
     },
     "ungated": {
         "setting": "atlasv3_acl_transport_normalized_oas",
-        "title": "ACL + full transport",
+        "title": "ACL w/ full transport ($\\alpha = 1$)",
         "color": "#009E73",
         "marker": "s",
     },
     "gated": {
-        "setting": "atlasv3_acl_gated_transport_normalized_oas_no_histneg",
-        "title": "ACL + gated transport",
+        "setting": "atlasv3_acl_gated_transport_normalized_oas_no_histneg_coverage_only",
+        "title": "ACL w/ gated transport",
         "color": "#0072B2",
         "marker": "^",
     },
@@ -93,13 +93,17 @@ def _plot(
 ) -> None:
     plt.rcParams.update(
         {
-            "font.size": 10,
+            "font.size": 13,
+            "axes.labelsize": 15,
+            "xtick.labelsize": 13,
+            "ytick.labelsize": 13,
+            "legend.fontsize": 13,
             "axes.spines.top": False,
             "axes.spines.right": False,
             "figure.dpi": 120,
         }
     )
-    fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.6))
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.8))
 
     ax = axes[0]
     x = feature_curve["after_task"].to_numpy() + 1
@@ -108,7 +112,6 @@ def _plot(
     ax.plot(x, np.zeros_like(x), "--", color="#666666", label="Frozen OAS-LDA")
     ax.plot(x, y, marker="o", color="#CC79A7", label="ACL encoder")
     ax.fill_between(x, y - ci, y + ci, color="#CC79A7", alpha=0.18)
-    ax.set_title("(a) Representation drift")
     ax.set_xlabel("Number of learned tasks")
     ax.set_ylabel("Cosine feature drift ↓")
     ax.legend(frameon=False)
@@ -124,17 +127,11 @@ def _plot(
         ci = values["ci95"].to_numpy()
         ax.plot(x, y, marker=spec["marker"], color=spec["color"], label=spec["title"])
         ax.fill_between(x, y - ci, y + ci, color=spec["color"], alpha=0.15)
-    ax.set_title("(b) Historical prototype mismatch")
     ax.set_xlabel("Number of learned tasks")
     ax.set_ylabel("Cosine distance to oracle ↓")
     ax.legend(frameon=False)
 
-    fig.suptitle(
-        "ATLAS-v3: representation drift and historical-statistics correction",
-        fontsize=14,
-        fontweight="bold",
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.tight_layout()
     output.mkdir(parents=True, exist_ok=True)
     fig.savefig(output / "atlas_v3_drift_transport.png", dpi=300, bbox_inches="tight")
     fig.savefig(output / "atlas_v3_drift_transport.pdf", bbox_inches="tight")

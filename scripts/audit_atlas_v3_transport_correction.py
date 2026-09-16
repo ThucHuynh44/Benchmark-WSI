@@ -32,12 +32,12 @@ from utils.main import _prepare_fold
 SETTINGS = {
     "static": "atlasv3_acl_normalized_oas_static",
     "ungated": "atlasv3_acl_transport_normalized_oas",
-    "gated": "atlasv3_acl_gated_transport_normalized_oas_no_histneg",
+    "gated": "atlasv3_acl_gated_transport_normalized_oas_no_histneg_coverage_only",
 }
 EXPECTED_MODES = {
     "static": "normalized_oas_static",
     "ungated": "transport_normalized_oas",
-    "gated": "gated_transport_normalized_oas_no_histneg",
+    "gated": "coverage_only_transport_normalized_oas_no_histneg",
 }
 DEFAULT_OUTPUT = REPO_ROOT / "results/diagnostics/atlas_v3_transport_correction"
 LEGACY_STATE_KEYS = {

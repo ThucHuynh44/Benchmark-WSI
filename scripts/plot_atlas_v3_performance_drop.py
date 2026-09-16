@@ -151,7 +151,7 @@ METHODS: list[dict[str, Any]] = [
         "label": "ATLAS-v3 (ours)",
         "source": (
             "results/ablations/atlas_v3_acl/"
-            "atlasv3_acl_gated_transport_normalized_oas_no_histneg/"
+            "atlasv3_acl_gated_transport_normalized_oas_no_histneg_coverage_only/"
             "fold_*/evaluation/class_il/eval_matrix.csv"
         ),
         "color": "#D62728",

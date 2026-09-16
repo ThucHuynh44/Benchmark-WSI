@@ -57,7 +57,7 @@ METHODS = (
         "family": "acl",
     },
     {
-        "id": "atlasv3_acl_gated_transport_normalized_oas_no_histneg",
+        "id": "atlasv3_acl_gated_transport_normalized_oas_no_histneg_coverage_only",
         "title": "ACL + Gated Transport + Normalized OAS",
         "model": "atlas_v3_acl",
         "root": "ablations/atlas_v3_acl",
@@ -321,7 +321,7 @@ def _create_tsne(
                 color=color[int(row["class_id"])], edgecolor="black", linewidth=0.8,
                 zorder=4,
             )
-        if spec["id"] == "atlasv3_acl_gated_transport_normalized_oas_no_histneg":
+        if spec["id"] == "atlasv3_acl_gated_transport_normalized_oas_no_histneg_coverage_only":
             static = {
                 int(row["class_id"]): row for row in metadata
                 if row["kind"] == "prototype"
