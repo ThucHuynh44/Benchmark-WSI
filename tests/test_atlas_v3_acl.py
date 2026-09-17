@@ -25,6 +25,7 @@ from models.utils.atlas_transport import (
     fit_lowrank_residual,
 )
 from scripts.atlas_v3_acl_registry import (
+    EXPECTED_COVARIANCE_SCALES,
     EXPECTED_EPOCHS,
     EXPECTED_MODES,
     EXPECTED_RANKS,
@@ -151,13 +152,15 @@ class AtlasV3ACLRegistryTests(unittest.TestCase):
     def test_registry_has_core_and_rank_ablation_settings(self):
         registry = load_registry(REGISTRY)
         self.assertEqual(tuple(registry["variants"]), SETTING_IDS)
-        self.assertEqual(len(SETTING_IDS), 19)
+        self.assertEqual(len(SETTING_IDS), 20)
         for variant_id, variant in registry["variants"].items():
             expected = {"atlasv3_acl_mode": EXPECTED_MODES[variant_id]}
             if variant_id in EXPECTED_RANKS:
                 expected["atlasv3_acl_transport_rank"] = EXPECTED_RANKS[variant_id]
             if variant_id in FULL_RANK_IDS:
                 expected["atlasv3_acl_transport_full_rank"] = True
+            if variant_id in EXPECTED_COVARIANCE_SCALES:
+                expected["atlasv3_acl_transport_cov_scale"] = EXPECTED_COVARIANCE_SCALES[variant_id]
             if variant_id in EXPECTED_EPOCHS:
                 expected["n_epochs"] = EXPECTED_EPOCHS[variant_id]
             self.assertEqual(variant["overrides"], expected)
@@ -396,6 +399,60 @@ class AtlasV3ACLTests(unittest.TestCase):
         row = model.transport_history[-1]
         self.assertEqual(row["applied_mean_gate_mean"], 0.0)
         self.assertEqual(row["applied_covariance_gate_mean"], 0.0)
+
+    def test_mean_only_keeps_coverage_and_mean_transport_but_not_scatter(self):
+        mode = "coverage_only_transport_normalized_oas_no_histneg"
+        full = build(args(atlasv3_acl_mode=mode))
+        mean_only = build(args(
+            atlasv3_acl_mode=mode,
+            atlasv3_acl_transport_cov_scale=0.0,
+        ))
+        for model in (full, mean_only):
+            model.current_task = 1
+            model.old_class_count = 2
+            model.seen_class_count = 4
+            model.net.raw_count[:2].copy_(torch.tensor([5, 6]))
+            model.net.raw_mean[:2].copy_(torch.tensor([
+                [0.4, -0.2, 0.1, 0.3],
+                [-0.3, 0.5, 0.2, -0.1],
+            ]))
+            model.net.raw_scatter[:2].copy_(torch.stack((
+                torch.diag(torch.tensor([0.2, 0.3, 0.4, 0.5])),
+                torch.diag(torch.tensor([0.6, 0.5, 0.4, 0.3])),
+            )))
+
+        generator = torch.Generator().manual_seed(19)
+        pre_raw = torch.randn(12, 4, generator=generator)
+        post_raw = pre_raw + torch.tensor([0.2, -0.1, 0.05, 0.15])
+        initial_mean = full.net.raw_mean[:2].clone()
+        initial_scatter = full.net.raw_scatter[:2].clone()
+        expected_gates = torch.tensor([0.25, 0.75])
+        coverage_inputs = []
+
+        def fixed_coverage(*values, **kwargs):
+            coverage_inputs.append(tuple(value.clone() for value in values))
+            return expected_gates
+
+        with patch(
+            "models.atlas_v3_acl.distribution_coverage",
+            side_effect=fixed_coverage,
+        ) as coverage:
+            full._transport_old(pre_raw, post_raw)
+            mean_only._transport_old(pre_raw, post_raw)
+
+        self.assertEqual(coverage.call_count, 2)
+        for first, second in zip(*coverage_inputs):
+            self.assertTrue(torch.equal(first, second))
+        self.assertTrue(torch.equal(full.net.last_step_gate[:2], expected_gates))
+        self.assertTrue(torch.equal(mean_only.net.last_step_gate[:2], expected_gates))
+        self.assertTrue(torch.allclose(full.net.raw_mean[:2], mean_only.net.raw_mean[:2]))
+        self.assertFalse(torch.equal(mean_only.net.raw_mean[:2], initial_mean))
+        self.assertTrue(torch.equal(mean_only.net.raw_scatter[:2], initial_scatter))
+        self.assertFalse(torch.equal(full.net.raw_scatter[:2], initial_scatter))
+        self.assertEqual(
+            mean_only.get_run_metadata()["atlas_v3_acl_config"]["implementation_semantics"],
+            "acl_only_normalized_oas_coverage_only_lowrank_mean_only_v1",
+        )
 
 
     def test_in_process_best_checkpoint_restore_preserves_pair_cache(self):

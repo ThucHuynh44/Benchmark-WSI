@@ -90,7 +90,7 @@ METHODS: list[dict[str, Any]] = [
     },
     {
         "enabled": True,
-        "label": "A-GEM (buffer 30)",
+        "label": "A-GEM",
         "source": "results/forward/agem_feather_buffer30_10tasks/evaluation/class_il/eval_matrix.csv",
         "color": "#17BECF",
         "marker": "D",
@@ -98,7 +98,7 @@ METHODS: list[dict[str, Any]] = [
     },
     {
         "enabled": True,
-        "label": "DER++ (buffer 30)",
+        "label": "DER++",
         "source": "results/forward/derpp_feather_buffer30_10tasks/evaluation/class_il/eval_matrix.csv",
         "color": "#1F77B4",
         "marker": "v",
@@ -106,7 +106,7 @@ METHODS: list[dict[str, Any]] = [
     },
     {
         "enabled": True,
-        "label": "ER-ACE (buffer 30)",
+        "label": "ER-ACE",
         "source": "results/forward/er_ace_feather_buffer30_10tasks_forward/evaluation/class_il/eval_matrix.csv",
         "color": "#2CA02C",
         "marker": "P",
@@ -114,7 +114,7 @@ METHODS: list[dict[str, Any]] = [
     },
     {
         "enabled": True,
-        "label": "LWSR (buffer 30)",
+        "label": "LWSR",
         "source": "results/forward/lwsr_feather_buffer30_10tasks/evaluation/class_il/eval_matrix.csv",
         "color": "#E377C2",
         "marker": "X",
@@ -122,33 +122,15 @@ METHODS: list[dict[str, Any]] = [
     },
     {
         "enabled": True,
-        "label": "MICIL (buffer 30)",
+        "label": "MICIL",
         "source": "results/forward/micil_feather_buffer30_10tasks/evaluation/class_il/eval_matrix.csv",
         "color": "#FF7F0E",
         "marker": "h",
         "linestyle": "-.",
     },
     {
-        # Disabled: folds 1..9 in this file use a reverse task order, so their
-        # per-task trajectories are not comparable with the fixed order here.
-        "enabled": False,
-        "label": "AMIL (buffer 30)",
-        "source": "results/forward/amil_feather_buffer30_10tasks_forward/evaluation/class_il/eval_matrix.csv",
-        "color": "#BCBD22",
-        "marker": "<",
-        "linestyle": ":",
-    },
-    {
         "enabled": True,
-        "label": "ATLAS-MIL (buffer 30)",
-        "source": "results/forward/atlas_mil_feather_buffer30_10tasks_forward/evaluation/class_il/eval_matrix.csv",
-        "color": "#7F7F7F",
-        "marker": ">",
-        "linestyle": ":",
-    },
-    {
-        "enabled": True,
-        "label": "ATLAS-v3 (ours)",
+        "label": "ASTRA",
         "source": (
             "results/ablations/atlas_v3_acl/"
             "atlasv3_acl_gated_transport_normalized_oas_no_histneg_coverage_only/"
@@ -159,6 +141,25 @@ METHODS: list[dict[str, Any]] = [
         "linestyle": "-",
         "proposed": True,
         "zorder": 20,
+    },
+    {
+        # Only fold 0 follows the fixed forward task order used by this plot;
+        # folds 1..9 in the AMIL result file use the reverse task order.
+        "enabled": True,
+        "label": "AMIL",
+        "source": "results/forward/amil_feather_buffer30_10tasks_forward/evaluation/class_il/eval_matrix.csv",
+        "folds": (0,),
+        "color": "#BCBD22",
+        "marker": "<",
+        "linestyle": ":",
+    },
+    {
+        "enabled": False,
+        "label": "ATLAS-MIL",
+        "source": "results/forward/atlas_mil_feather_buffer30_10tasks_forward/evaluation/class_il/eval_matrix.csv",
+        "color": "#7F7F7F",
+        "marker": ">",
+        "linestyle": ":",
     },
     # Ready-to-enable examples:
     {
@@ -238,19 +239,23 @@ def _read_rows(paths: Iterable[Path], label: str) -> list[dict[str, Any]]:
     return output
 
 
-def _validate(rows: list[dict[str, Any]], label: str) -> None:
+def _validate(
+    rows: list[dict[str, Any]], label: str, expected_folds: tuple[int, ...]
+) -> None:
     if not STRICT_COMPLETE:
         return
     folds = {int(row["fold"]) for row in rows}
-    if folds != set(EXPECTED_FOLDS):
-        raise ValueError(f"{label}: expected folds {list(EXPECTED_FOLDS)}, got {sorted(folds)}")
+    if folds != set(expected_folds):
+        raise ValueError(
+            f"{label}: expected folds {list(expected_folds)}, got {sorted(folds)}"
+        )
     observed = {
         (int(row["fold"]), int(row["after_task"]), int(row["eval_task"]))
         for row in rows
     }
     expected = {
         (fold, after_task, eval_task)
-        for fold in EXPECTED_FOLDS
+        for fold in expected_folds
         for after_task in range(EXPECTED_TASKS)
         for eval_task in range(after_task + 1)
     }
@@ -357,6 +362,10 @@ def _band(row: dict[str, Any], scale: float) -> tuple[float, float]:
     return low * scale, high * scale
 
 
+def _display_task_name(task_name: str) -> str:
+    return task_name.upper().replace("_", " - ")
+
+
 def _plot(
     methods: list[dict[str, Any]],
     summary: list[dict[str, Any]],
@@ -433,7 +442,9 @@ def _plot(
                     transform=axis.transAxes,
                 )
 
-        axis.set_title(f"T{eval_task + 1}: {task_names[eval_task]}")
+        axis.set_title(
+            f"T{eval_task + 1}: {_display_task_name(task_names[eval_task])}"
+        )
         axis.set_xlim(eval_task + 0.7, EXPECTED_TASKS + 0.3)
         axis.set_ylim(*Y_LIMITS)
         axis.set_xticks(range(eval_task + 1, EXPECTED_TASKS + 1))
@@ -475,7 +486,9 @@ def main() -> int:
     for spec in enabled:
         paths = _source_paths(str(spec["source"]))
         rows = _read_rows(paths, str(spec["label"]))
-        _validate(rows, str(spec["label"]))
+        expected_folds = tuple(int(fold) for fold in spec.get("folds", EXPECTED_FOLDS))
+        rows = [row for row in rows if int(row["fold"]) in expected_folds]
+        _validate(rows, str(spec["label"]), expected_folds)
         all_rows.extend(rows)
         print(
             f"[curve] {spec['label']}: files={len(paths)} "

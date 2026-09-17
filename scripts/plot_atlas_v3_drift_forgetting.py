@@ -86,26 +86,7 @@ def _prototype_curves(prototype: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(pieces, ignore_index=True)
 
 
-def _plot(
-    feature_curve: pd.DataFrame,
-    prototype_curve: pd.DataFrame,
-    output: Path,
-) -> None:
-    plt.rcParams.update(
-        {
-            "font.size": 13,
-            "axes.labelsize": 15,
-            "xtick.labelsize": 13,
-            "ytick.labelsize": 13,
-            "legend.fontsize": 13,
-            "axes.spines.top": False,
-            "axes.spines.right": False,
-            "figure.dpi": 120,
-        }
-    )
-    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.8))
-
-    ax = axes[0]
+def _draw_feature_drift(ax: plt.Axes, feature_curve: pd.DataFrame) -> None:
     x = feature_curve["after_task"].to_numpy() + 1
     y = feature_curve["mean"].to_numpy()
     ci = feature_curve["ci95"].to_numpy()
@@ -116,7 +97,10 @@ def _plot(
     ax.set_ylabel("Cosine feature drift ↓")
     ax.legend(frameon=False)
 
-    ax = axes[1]
+
+def _draw_transport_correction(
+    ax: plt.Axes, prototype_curve: pd.DataFrame
+) -> None:
     for role in METHODS:
         values = prototype_curve[prototype_curve["method"] == role]
         if values.empty:
@@ -131,11 +115,45 @@ def _plot(
     ax.set_ylabel("Cosine distance to oracle ↓")
     ax.legend(frameon=False)
 
+
+def _save_figure(fig: plt.Figure, output: Path, stem: str) -> None:
     fig.tight_layout()
     output.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output / "atlas_v3_drift_transport.png", dpi=300, bbox_inches="tight")
-    fig.savefig(output / "atlas_v3_drift_transport.pdf", bbox_inches="tight")
+    fig.savefig(output / f"{stem}.png", dpi=300, bbox_inches="tight")
+    fig.savefig(output / f"{stem}.pdf", bbox_inches="tight")
     plt.close(fig)
+
+
+def _plot(
+    feature_curve: pd.DataFrame,
+    prototype_curve: pd.DataFrame,
+    output: Path,
+) -> None:
+    plt.rcParams.update(
+        {
+            "font.size": 13,
+            "axes.labelsize": 18,
+            "xtick.labelsize": 13,
+            "ytick.labelsize": 13,
+            "legend.fontsize": 13,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "figure.dpi": 120,
+        }
+    )
+
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.8))
+    _draw_feature_drift(axes[0], feature_curve)
+    _draw_transport_correction(axes[1], prototype_curve)
+    _save_figure(fig, output, "atlas_v3_drift_transport")
+
+    fig, ax = plt.subplots(figsize=(6.25, 4.8))
+    _draw_feature_drift(ax, feature_curve)
+    _save_figure(fig, output, "atlas_v3_feature_drift")
+
+    fig, ax = plt.subplots(figsize=(6.25, 4.8))
+    _draw_transport_correction(ax, prototype_curve)
+    _save_figure(fig, output, "atlas_v3_transport_correction")
 
 
 def main(argv=None) -> int:
@@ -175,12 +193,13 @@ def main(argv=None) -> int:
         "feature_root": str(Path(args.feature_root).expanduser().resolve()),
         "prototype_root": str(Path(args.prototype_root).expanduser().resolve()),
         "folds": folds,
+        "settings": {role: spec["setting"] for role, spec in METHODS.items()},
         "feature_drift": "1 - cosine(frozen_FEATHER(x), ACL_FEATHER_t(x)); macro over classes",
         "prototype_mismatch": "cosine distance between stored and oracle historical prototypes",
         "transport_comparison": {
             "static": "no transport",
             "ungated": "full low-rank transport step (gate=1)",
-            "gated": "adaptive class-wise gated low-rank transport step",
+            "gated": "coverage-only class-wise gated low-rank transport step",
         },
     }
     (output / "figure_manifest.json").write_text(

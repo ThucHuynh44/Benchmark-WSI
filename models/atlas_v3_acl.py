@@ -66,6 +66,9 @@ OAS_DIAGNOSTIC_SEMANTICS = {
     "uncertainty_only_transport_normalized_oas_no_histneg": "acl_only_normalized_oas_uncertainty_only_lowrank_transport_v1",
     "gated_transport_normalized_oas_no_histneg": "acl_only_normalized_oas_gated_lowrank_transport_v1",
 }
+MEAN_ONLY_DIAGNOSTIC_SEMANTICS = (
+    "acl_only_normalized_oas_coverage_only_lowrank_mean_only_v1"
+)
 FULL_RANK_DIAGNOSTIC_SEMANTICS = (
     "acl_only_normalized_oas_gated_full_ridge_transport_v1"
 )
@@ -569,6 +572,11 @@ class AtlasV3ACL(ContinualModel):
             "ablation_config_hash": getattr(self.args, "ablation_config_hash", None),
         }
         if (
+            self.mode == "coverage_only_transport_normalized_oas_no_histneg"
+            and float(self.args.atlasv3_acl_transport_cov_scale) == 0.0
+        ):
+            config["implementation_semantics"] = MEAN_ONLY_DIAGNOSTIC_SEMANTICS
+        elif (
             self.mode == "gated_transport_normalized_oas_no_histneg"
             and bool(self.args.atlasv3_acl_transport_full_rank)
         ):

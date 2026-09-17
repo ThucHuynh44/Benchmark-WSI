@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.atlas_v3_acl_registry import (
+    EXPECTED_COVARIANCE_SCALES,
     EXPECTED_EPOCHS,
     FULL_RANK_IDS,
     SETTING_IDS,
@@ -37,6 +38,9 @@ OAS_DIAGNOSTIC_SEMANTICS = {
 }
 FULL_RANK_DIAGNOSTIC_SEMANTICS = (
     "acl_only_normalized_oas_gated_full_ridge_transport_v1"
+)
+MEAN_ONLY_DIAGNOSTIC_SEMANTICS = (
+    "acl_only_normalized_oas_coverage_only_lowrank_mean_only_v1"
 )
 
 
@@ -145,7 +149,11 @@ def inspect_run(registry: Dict[str, Any], variant: Dict[str, Any], fold: int) ->
     expected_semantics = (
         FULL_RANK_DIAGNOSTIC_SEMANTICS
         if variant["id"] in FULL_RANK_IDS
-        else OAS_DIAGNOSTIC_SEMANTICS.get(mode)
+        else (
+            MEAN_ONLY_DIAGNOSTIC_SEMANTICS
+            if variant["id"] in EXPECTED_COVARIANCE_SCALES
+            else OAS_DIAGNOSTIC_SEMANTICS.get(mode)
+        )
     )
     saved_semantics = manifest.get("atlas_v3_acl_config", {}).get(
         "implementation_semantics"

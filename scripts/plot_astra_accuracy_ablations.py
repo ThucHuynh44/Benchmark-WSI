@@ -67,6 +67,7 @@ BAR_WIDTH = 0.64
 BAR_ALPHA = 0.88
 ERROR_CAP_SIZE = 4.0
 Y_PADDING = 0.35  # percentage points when SCALE_TO_PERCENT=True
+AXIS_LABEL_SIZE = 18
 
 EPOCH_COLOR = "#CC79A7"
 RANK_COLOR = "#0072B2"
@@ -259,9 +260,10 @@ def _draw(
     )
 
     ax.set_title(title)
-    ax.set_xlabel(x_label)
+    ax.set_xlabel(x_label, fontsize=AXIS_LABEL_SIZE)
     ax.set_ylabel(
-        "Mean accuracy (mACC, %) ↑" if SCALE_TO_PERCENT else "Mean accuracy (mACC) ↑"
+        "Mean accuracy (mACC, %) ↑" if SCALE_TO_PERCENT else "Mean accuracy (mACC) ↑",
+        fontsize=AXIS_LABEL_SIZE,
     )
     ax.set_xticks(x, tick_labels)
     ax.set_xlim(-0.55, len(x) - 0.45)
@@ -281,15 +283,7 @@ def _save_single(
 ) -> None:
     fig, ax = plt.subplots(figsize=FIGSIZE_SINGLE)
     _draw(ax, rows, title=title, x_label=x_label, color=color)
-    fig.text(
-        0.5,
-        0.01,
-        "Error bars denote the 95% confidence interval over folds.",
-        ha="center",
-        fontsize=8,
-        color="#555555",
-    )
-    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    fig.tight_layout()
     for suffix in ("png", "pdf"):
         fig.savefig(OUTPUT_DIR / f"{stem}.{suffix}", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
@@ -309,14 +303,14 @@ def main() -> int:
     _save_single(
         epoch_summary,
         stem="acl_epochs_accuracy",
-        title="Effect of ACL Adaptation Epochs",
+        title="",
         x_label="Number of ACL epochs",
         color=EPOCH_COLOR,
     )
     _save_single(
         rank_summary,
         stem="transport_rank_accuracy",
-        title="Effect of Transport Rank",
+        title="",
         x_label="Transport rank",
         color=RANK_COLOR,
     )
@@ -325,31 +319,18 @@ def main() -> int:
     _draw(
         axes[0],
         epoch_summary,
-        title="(a) ACL Adaptation Epochs",
+        title="",
         x_label="Number of ACL epochs",
         color=EPOCH_COLOR,
     )
     _draw(
         axes[1],
         rank_summary,
-        title="(b) Transport Rank",
+        title="",
         x_label="Transport rank",
         color=RANK_COLOR,
     )
-    fig.suptitle(
-        "ASTRA: accuracy sensitivity to adaptation epochs and transport rank",
-        fontsize=14,
-        fontweight="bold",
-    )
-    fig.text(
-        0.5,
-        0.01,
-        "Mean accuracy is computed exclusively from Class-IL accuracy; error bars show 95% confidence intervals.",
-        ha="center",
-        fontsize=8,
-        color="#555555",
-    )
-    fig.tight_layout(rect=(0, 0.04, 1, 0.92))
+    fig.tight_layout()
     for suffix in ("png", "pdf"):
         fig.savefig(
             OUTPUT_DIR / f"acl_epochs_and_transport_rank_accuracy.{suffix}",
